@@ -12,7 +12,7 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use tokio::sync::mpsc;
 
-use xbbg_core::{BlpError, Message};
+use xbbg_core::{BlpError, Message, Value};
 
 use super::super::OverflowPolicy;
 use super::typed_builder::{ArrowType, TypedBuilder};
@@ -129,46 +129,24 @@ impl SubscriptionState {
     /// `SystemTime::now()` if not enabled.
     pub fn on_message(&mut self, msg: &Message) -> bool {
         // Use Bloomberg SDK receive time if available, fallback to system time
-        let timestamp = msg.time_received_us().unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_micros() as i64)
-                .unwrap_or(0)
-        });
+        let timestamp = msg
+            .time_received_us()
+            .unwrap_or_else(Self::current_timestamp_us);
 
         self.timestamp_builder.append_value(timestamp);
         self.topic_builder.append_value(self.topic.as_ref());
 
         // Extract each field value using dynamic type dispatch
         let elem = msg.elements();
-        for (i, field_name) in self.field_strings.iter().enumerate() {
-            if let Some(field_elem) = elem.get_by_str(field_name) {
-                let value = field_elem.get_value(0);
-
-                if let Some(builder) = &mut self.field_builders[i] {
-                    // Builder exists — append value (TypedBuilder handles coercion)
-                    builder.append_value(value);
-                } else if let Some(ref v) = value {
-                    if !matches!(v, xbbg_core::Value::Null) {
-                        // First non-null value for this field — infer type and create builder
-                        let arrow_type = ArrowType::from_value(v);
-                        let mut builder = TypedBuilder::new(arrow_type);
-                        // Backfill nulls for all previous rows
-                        for _ in 0..self.pending_count {
-                            builder.append_null();
-                        }
-                        builder.append_value(value);
-                        self.field_builders[i] = Some(builder);
-                        self.cached_schema = None; // Schema needs rebuild
-                    }
+        for i in 0..self.field_strings.len() {
+            let (field_value, field_present) = {
+                let field_name = &self.field_strings[i];
+                match elem.get_by_str(field_name) {
+                    Some(field_elem) => (field_elem.get_value(0), true),
+                    None => (None, false),
                 }
-                // If value is None/Null and no builder yet: skip — backfilled on creation
-            } else {
-                // Field not present in this message — append null if builder exists
-                if let Some(builder) = &mut self.field_builders[i] {
-                    builder.append_null();
-                }
-            }
+            };
+            self.append_field_value(i, field_value, field_present);
         }
 
         self.pending_count += 1;
@@ -192,8 +170,7 @@ impl SubscriptionState {
 
     /// Handle DATALOSS indicator.
     pub fn on_dataloss(&mut self, timestamp_us: Option<i64>) {
-        self.slow_consumer = true;
-        self.metrics.slow_consumer.store(true, Ordering::Relaxed);
+        self.set_slow_consumer(true);
         self.metrics
             .data_loss_events
             .fetch_add(1, Ordering::Relaxed);
@@ -205,8 +182,7 @@ impl SubscriptionState {
     }
 
     pub fn clear_slow_consumer(&mut self) {
-        self.slow_consumer = false;
-        self.metrics.slow_consumer.store(false, Ordering::Relaxed);
+        self.set_slow_consumer(false);
     }
 
     pub fn mark_closing(&mut self) {
@@ -311,11 +287,9 @@ impl SubscriptionState {
                 // blocking_send is designed for sync contexts (subscription worker thread).
                 // Blocks until space is available or the receiver is dropped.
                 if self.stream.blocking_send(Ok(batch)).is_err() {
-                    if !self.suppress_closed_warning {
-                        xbbg_log::warn!(topic = %self.topic, "stream closed");
-                    }
+                    self.warn_stream_closed();
                 } else {
-                    self.metrics.batches_sent.fetch_add(1, Ordering::Relaxed);
+                    self.record_batch_sent();
                 }
             }
             _ => {
@@ -323,31 +297,84 @@ impl SubscriptionState {
                 // DropOldest is degraded to DropNewest — proper ring buffer not yet implemented.
                 match self.stream.try_send(Ok(batch)) {
                     Ok(()) => {
-                        self.metrics.batches_sent.fetch_add(1, Ordering::Relaxed);
+                        self.record_batch_sent();
                     }
                     Err(mpsc::error::TrySendError::Full(_)) => {
                         self.dropped_batches += 1;
                         self.metrics.dropped_batches.fetch_add(1, Ordering::Relaxed);
-                        let policy_label = match self.overflow_policy {
-                            OverflowPolicy::DropNewest => "DropNewest",
-                            OverflowPolicy::DropOldest => "DropOldest (degraded to DropNewest)",
-                            OverflowPolicy::Block => "Block",
-                        };
                         xbbg_log::warn!(
                             topic = %self.topic,
                             dropped = self.dropped_batches,
-                            policy = policy_label,
+                            policy = self.overflow_policy_label(),
                             "stream full - dropping batch"
                         );
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        if !self.suppress_closed_warning {
-                            xbbg_log::warn!(topic = %self.topic, "stream closed");
-                        }
+                        self.warn_stream_closed();
                     }
                 }
             }
         }
+    }
+
+    fn current_timestamp_us() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros() as i64)
+            .unwrap_or(0)
+    }
+
+    fn set_slow_consumer(&mut self, active: bool) {
+        self.slow_consumer = active;
+        self.metrics.slow_consumer.store(active, Ordering::Relaxed);
+    }
+
+    fn record_batch_sent(&self) {
+        self.metrics.batches_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn warn_stream_closed(&self) {
+        if !self.suppress_closed_warning {
+            xbbg_log::warn!(topic = %self.topic, "stream closed");
+        }
+    }
+
+    fn overflow_policy_label(&self) -> &'static str {
+        match self.overflow_policy {
+            OverflowPolicy::DropNewest => "DropNewest",
+            OverflowPolicy::DropOldest => "DropOldest (degraded to DropNewest)",
+            OverflowPolicy::Block => "Block",
+        }
+    }
+
+    fn append_field_value(&mut self, index: usize, value: Option<Value<'_>>, field_present: bool) {
+        if let Some(builder) = &mut self.field_builders[index] {
+            if field_present {
+                builder.append_value(value);
+            } else {
+                builder.append_null();
+            }
+            return;
+        }
+
+        if !field_present {
+            return;
+        }
+
+        let Some(value_ref) = value.as_ref() else {
+            return;
+        };
+        if value_ref.is_null() {
+            return;
+        }
+
+        let mut builder = TypedBuilder::new(ArrowType::from_value(value_ref));
+        for _ in 0..self.pending_count {
+            builder.append_null();
+        }
+        builder.append_value(value);
+        self.field_builders[index] = Some(builder);
+        self.cached_schema = None; // Schema needs rebuild
     }
 }
 
@@ -355,5 +382,123 @@ impl Drop for SubscriptionState {
     fn drop(&mut self) {
         // Flush any remaining rows
         self.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use arrow::array::{ArrayRef, StringBuilder, TimestampMicrosecondBuilder};
+    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use arrow::record_batch::RecordBatch;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    fn test_batch() -> RecordBatch {
+        let mut timestamp_builder = TimestampMicrosecondBuilder::new();
+        timestamp_builder.append_value(1);
+        let mut topic_builder = StringBuilder::new();
+        topic_builder.append_value("topic");
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new("topic", DataType::Utf8, false),
+        ]));
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(timestamp_builder.finish()) as ArrayRef,
+                Arc::new(topic_builder.finish()) as ArrayRef,
+            ],
+        )
+        .expect("valid test batch")
+    }
+
+    #[test]
+    fn slow_consumer_helpers_update_state_and_metrics() {
+        let (stream, _rx) = mpsc::channel(1);
+        let mut state = SubscriptionState::with_policy(
+            "IBM US Equity".to_string(),
+            vec!["PX_LAST".to_string()],
+            stream,
+            1,
+            OverflowPolicy::default(),
+        );
+
+        state.on_dataloss(Some(123));
+        assert!(state.slow_consumer);
+        assert!(state.metrics.slow_consumer.load(Ordering::Relaxed));
+        assert_eq!(state.metrics.data_loss_events.load(Ordering::Relaxed), 1);
+        assert_eq!(state.metrics.last_data_loss_us.load(Ordering::Relaxed), 123);
+
+        state.clear_slow_consumer();
+        assert!(!state.slow_consumer);
+        assert!(!state.metrics.slow_consumer.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn append_field_value_infers_builder_and_backfills_nulls() {
+        let (stream, _rx) = mpsc::channel(1);
+        let mut state = SubscriptionState::with_policy(
+            "IBM US Equity".to_string(),
+            vec!["PX_LAST".to_string()],
+            stream,
+            1,
+            OverflowPolicy::default(),
+        );
+        state.pending_count = 2;
+        state.cached_schema = Some(Arc::new(Schema::empty()));
+
+        state.append_field_value(0, Some(Value::Int64(42)), true);
+
+        let builder = state.field_builders[0].as_ref().expect("builder created");
+        assert_eq!(builder.len(), 3);
+        assert!(state.cached_schema.is_none());
+    }
+
+    #[test]
+    fn append_field_value_appends_nulls_for_missing_present_builder() {
+        let (stream, _rx) = mpsc::channel(1);
+        let mut state = SubscriptionState::with_policy(
+            "IBM US Equity".to_string(),
+            vec!["PX_LAST".to_string()],
+            stream,
+            1,
+            OverflowPolicy::default(),
+        );
+        state.field_builders[0] = Some(TypedBuilder::new(ArrowType::Int64));
+
+        state.append_field_value(0, None, false);
+
+        let builder = state.field_builders[0].as_ref().expect("builder kept");
+        assert_eq!(builder.len(), 1);
+    }
+
+    #[test]
+    fn send_batch_updates_metrics_for_success_and_full_channel() {
+        let (stream, _rx) = mpsc::channel(1);
+        let mut state = SubscriptionState::with_policy(
+            "IBM US Equity".to_string(),
+            vec![],
+            stream,
+            1,
+            OverflowPolicy::DropNewest,
+        );
+        let batch = test_batch();
+
+        state.send_batch(batch.clone());
+        assert_eq!(state.metrics.batches_sent.load(Ordering::Relaxed), 1);
+        assert_eq!(state.dropped_batches, 0);
+
+        state.send_batch(batch);
+        assert_eq!(state.metrics.batches_sent.load(Ordering::Relaxed), 1);
+        assert_eq!(state.dropped_batches, 1);
+        assert_eq!(state.metrics.dropped_batches.load(Ordering::Relaxed), 1);
     }
 }

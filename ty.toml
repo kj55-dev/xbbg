@@ -1,0 +1,27 @@
+[environment]
+root = ["./py-xbbg/src"]
+python-platform = "all"
+
+[analysis]
+allowed-unresolved-imports = ["tomllib"]
+replace-imports-with-any = [
+  "blpapi",
+  "duckdb",
+  "polars",
+]
+
+[src]
+include = [
+  "py-xbbg/src",
+  "py-xbbg/tests",
+]
+exclude = ["py-xbbg/tests/live/**"]
+
+[[overrides]]
+include = ["py-xbbg/tests/**"]
+
+[overrides.rules]
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+not-subscriptable = "ignore"
+unresolved-attribute = "ignore"

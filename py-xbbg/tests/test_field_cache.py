@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import xbbg.field_cache as field_cache_module
-
 
 class FakeEngine:
     def field_cache_stats(self) -> dict[str, int | str]:
@@ -14,6 +12,7 @@ class FakeEngine:
 def test_get_field_cache_stats_export(monkeypatch):
     """The package root should export field cache stats with cache_path."""
     from xbbg import get_field_cache_stats
+    import xbbg.field_cache as field_cache_module
 
     monkeypatch.setattr(field_cache_module, "_get_engine", lambda: FakeEngine())
 
@@ -26,6 +25,7 @@ def test_get_field_cache_stats_export(monkeypatch):
 def test_field_type_cache_exposes_cache_path(monkeypatch):
     """FieldTypeCache should surface the resolved cache path."""
     from xbbg import FieldTypeCache
+    import xbbg.field_cache as field_cache_module
 
     monkeypatch.setattr(field_cache_module, "_get_engine", lambda: FakeEngine())
 
@@ -35,4 +35,16 @@ def test_field_type_cache_exposes_cache_path(monkeypatch):
         "entry_count": 7,
         "cache_path": "C:/tmp/xbbg/field_cache.json",
     }
+    assert cache.cache_path == "C:/tmp/xbbg/field_cache.json"
+
+
+def test_field_type_cache_accepts_legacy_cache_path(monkeypatch):
+    """Legacy cache_path should remain a no-op compatibility argument."""
+    from xbbg import FieldTypeCache
+    import xbbg.field_cache as field_cache_module
+
+    monkeypatch.setattr(field_cache_module, "_get_engine", lambda: FakeEngine())
+
+    cache = FieldTypeCache(cache_path="/tmp/legacy-cache.json")
+
     assert cache.cache_path == "C:/tmp/xbbg/field_cache.json"

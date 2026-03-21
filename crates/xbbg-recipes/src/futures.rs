@@ -375,20 +375,20 @@ fn extract_refdata_string_for_ticker(
     ticker: &str,
     field: &str,
 ) -> Result<Option<String>> {
-    let ticker_col = as_string_col(batch, "ticker")?;
-    let field_col = as_string_col(batch, "field")?;
-    let value_col = as_string_col(batch, "value")?;
+    let (ticker_col, field_col, value_col) = refdata_string_columns(batch)?;
 
     for row in 0..batch.num_rows() {
-        if ticker_col.is_null(row) || field_col.is_null(row) || value_col.is_null(row) {
+        let Some((row_ticker, row_field, row_value)) =
+            refdata_row_values(ticker_col, field_col, value_col, row)
+        else {
+            continue;
+        };
+
+        if row_ticker != ticker || !row_field.eq_ignore_ascii_case(field) {
             continue;
         }
 
-        if ticker_col.value(row) != ticker || !field_col.value(row).eq_ignore_ascii_case(field) {
-            continue;
-        }
-
-        let raw = value_col.value(row).trim();
+        let raw = row_value.trim();
         if raw.is_empty() {
             continue;
         }
@@ -403,26 +403,25 @@ fn extract_refdata_date_values(
     batch: &RecordBatch,
     field: &str,
 ) -> Result<Vec<(String, NaiveDate)>> {
-    let ticker_col = as_string_col(batch, "ticker")?;
-    let field_col = as_string_col(batch, "field")?;
-    let value_col = as_string_col(batch, "value")?;
-
+    let (ticker_col, field_col, value_col) = refdata_string_columns(batch)?;
     let mut output = Vec::new();
 
     for row in 0..batch.num_rows() {
-        if ticker_col.is_null(row) || field_col.is_null(row) || value_col.is_null(row) {
-            continue;
-        }
-
-        if !field_col.value(row).eq_ignore_ascii_case(field) {
-            continue;
-        }
-
-        let Some(parsed) = parse_any_date(value_col.value(row)) else {
+        let Some((row_ticker, row_field, row_value)) =
+            refdata_row_values(ticker_col, field_col, value_col, row)
+        else {
             continue;
         };
 
-        output.push((ticker_col.value(row).to_string(), parsed));
+        if !row_field.eq_ignore_ascii_case(field) {
+            continue;
+        }
+
+        let Some(parsed) = parse_any_date(row_value) else {
+            continue;
+        };
+
+        output.push((row_ticker.to_string(), parsed));
     }
 
     Ok(output)
@@ -445,7 +444,6 @@ fn latest_history_numeric_point(
     let ticker_col = as_string_col(batch, "ticker")?;
     let field_col = as_string_col(batch, "field")?;
     let value_col = as_string_col(batch, "value")?;
-
     let date_col = batch
         .column_by_name("date")
         .ok_or_else(|| RecipeError::Other("missing 'date' column".to_string()))?;
@@ -472,23 +470,7 @@ fn latest_history_numeric_point(
             continue;
         };
 
-        let row_date = if let Some(col) = date32_col {
-            if col.is_null(row) {
-                None
-            } else {
-                date32_to_naive(col.value(row))
-            }
-        } else if let Some(col) = date_str_col {
-            if col.is_null(row) {
-                None
-            } else {
-                parse_any_date(col.value(row))
-            }
-        } else {
-            None
-        };
-
-        let Some(row_date) = row_date else {
+        let Some(row_date) = history_row_date(date32_col, date_str_col, row) else {
             continue;
         };
 
@@ -499,6 +481,57 @@ fn latest_history_numeric_point(
     }
 
     Ok(best)
+}
+
+fn refdata_string_columns(
+    batch: &RecordBatch,
+) -> Result<(&StringArray, &StringArray, &StringArray)> {
+    Ok((
+        as_string_col(batch, "ticker")?,
+        as_string_col(batch, "field")?,
+        as_string_col(batch, "value")?,
+    ))
+}
+
+fn refdata_row_values<'a>(
+    ticker_col: &'a StringArray,
+    field_col: &'a StringArray,
+    value_col: &'a StringArray,
+    row: usize,
+) -> Option<(&'a str, &'a str, &'a str)> {
+    if ticker_col.is_null(row) || field_col.is_null(row) || value_col.is_null(row) {
+        return None;
+    }
+
+    Some((
+        ticker_col.value(row),
+        field_col.value(row),
+        value_col.value(row),
+    ))
+}
+
+fn history_row_date(
+    date32_col: Option<&Date32Array>,
+    date_str_col: Option<&StringArray>,
+    row: usize,
+) -> Option<NaiveDate> {
+    if let Some(col) = date32_col {
+        if col.is_null(row) {
+            return None;
+        }
+
+        return date32_to_naive(col.value(row));
+    }
+
+    if let Some(col) = date_str_col {
+        if col.is_null(row) {
+            return None;
+        }
+
+        return parse_any_date(col.value(row));
+    }
+
+    None
 }
 
 fn parse_series_number(value: &str) -> Option<u32> {
@@ -616,6 +649,42 @@ mod tests {
                     "ESM24 Index",
                 ])),
                 Arc::new(Date32Array::from(vec![Some(d1), Some(d2), Some(d2)])),
+                Arc::new(StringArray::from(vec!["VOLUME", "VOLUME", "VOLUME"])),
+                Arc::new(StringArray::from(vec!["100", "250", "175"])),
+            ],
+        )
+        .unwrap();
+
+        let latest = latest_history_numeric_point(&batch, "ESH24 Index", "VOLUME")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(latest.0, NaiveDate::from_ymd_opt(2024, 1, 3).unwrap());
+        assert_eq!(latest.1, 250.0);
+    }
+
+    #[test]
+    fn test_latest_history_numeric_point_uses_string_date_rows() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ticker", DataType::Utf8, false),
+            Field::new("date", DataType::Utf8, true),
+            Field::new("field", DataType::Utf8, false),
+            Field::new("value", DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    "ESH24 Index",
+                    "ESH24 Index",
+                    "ESM24 Index",
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some("2024-01-02"),
+                    Some("2024-01-03"),
+                    Some("2024-01-03"),
+                ])),
                 Arc::new(StringArray::from(vec!["VOLUME", "VOLUME", "VOLUME"])),
                 Arc::new(StringArray::from(vec!["100", "250", "175"])),
             ],

@@ -7,38 +7,23 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use xbbg_log::{debug, info, warn};
 
 use super::types::ServiceSchema;
 
-fn recover_read_lock<'a, T>(
-    lock: &'a RwLock<T>,
+fn recover_lock<G>(
+    result: Result<G, PoisonError<G>>,
     lock_name: &'static str,
-) -> RwLockReadGuard<'a, T> {
-    match lock.read() {
+    access: &'static str,
+) -> G {
+    match result {
         Ok(guard) => guard,
         Err(poisoned) => {
             warn!(
                 lock = lock_name,
-                "schema cache lock poisoned; recovering read access"
-            );
-            poisoned.into_inner()
-        }
-    }
-}
-
-fn recover_write_lock<'a, T>(
-    lock: &'a RwLock<T>,
-    lock_name: &'static str,
-) -> RwLockWriteGuard<'a, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            warn!(
-                lock = lock_name,
-                "schema cache lock poisoned; recovering write access"
+                "schema cache lock poisoned; recovering {} access", access
             );
             poisoned.into_inner()
         }
@@ -149,7 +134,7 @@ impl SchemaCache {
     pub fn get(&self, service: &str) -> Option<Arc<ServiceSchema>> {
         // Check in-memory cache first
         {
-            let cache = recover_read_lock(&self.cache, "schema_cache");
+            let cache = recover_lock(self.cache.read(), "schema_cache", "read");
             if let Some(schema) = cache.get(service) {
                 return Some(Arc::clone(schema));
             }
@@ -159,7 +144,7 @@ impl SchemaCache {
         if let Some(schema) = self.load_from_disk(service) {
             let schema = Arc::new(schema);
             // Add to in-memory cache
-            let mut cache = recover_write_lock(&self.cache, "schema_cache");
+            let mut cache = recover_lock(self.cache.write(), "schema_cache", "write");
             cache.insert(service.to_string(), Arc::clone(&schema));
             return Some(schema);
         }
@@ -178,7 +163,7 @@ impl SchemaCache {
 
         // Store in memory
         let schema = Arc::new(schema);
-        let mut cache = recover_write_lock(&self.cache, "schema_cache");
+        let mut cache = recover_lock(self.cache.write(), "schema_cache", "write");
         cache.insert(service.to_string(), Arc::clone(&schema));
         schema
     }
@@ -187,7 +172,7 @@ impl SchemaCache {
     pub fn invalidate(&self, service: &str) {
         // Remove from memory
         {
-            let mut cache = recover_write_lock(&self.cache, "schema_cache");
+            let mut cache = recover_lock(self.cache.write(), "schema_cache", "write");
             cache.remove(service);
         }
 
@@ -206,7 +191,7 @@ impl SchemaCache {
     pub fn clear(&self) {
         // Clear memory
         {
-            let mut cache = recover_write_lock(&self.cache, "schema_cache");
+            let mut cache = recover_lock(self.cache.write(), "schema_cache", "write");
             cache.clear();
         }
 
@@ -230,7 +215,7 @@ impl SchemaCache {
     /// Returns URIs from both memory and disk.
     pub fn list(&self) -> Vec<String> {
         let mut services: Vec<String> = {
-            let cache = recover_read_lock(&self.cache, "schema_cache");
+            let cache = recover_lock(self.cache.read(), "schema_cache", "read");
             cache.keys().cloned().collect()
         };
 
@@ -260,7 +245,7 @@ impl SchemaCache {
     pub fn contains(&self, service: &str) -> bool {
         // Check memory first
         {
-            let cache = recover_read_lock(&self.cache, "schema_cache");
+            let cache = recover_lock(self.cache.read(), "schema_cache", "read");
             if cache.contains_key(service) {
                 return true;
             }
@@ -272,7 +257,7 @@ impl SchemaCache {
 
     /// Get cache statistics.
     pub fn stats(&self) -> CacheStats {
-        let memory_count = recover_read_lock(&self.cache, "schema_cache").len();
+        let memory_count = recover_lock(self.cache.read(), "schema_cache", "read").len();
         let disk_count = if self.cache_dir.exists() {
             fs::read_dir(&self.cache_dir)
                 .map(|entries| {

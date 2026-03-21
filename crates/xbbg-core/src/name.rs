@@ -59,19 +59,20 @@ thread_local! {
 /// }
 /// ```
 pub fn clear_name_cache() {
-    NAME_CACHE.with(|cache| {
-        // SAFETY: TLS guarantees single-threaded access
-        unsafe { (*cache.get()).clear() };
-    });
+    with_name_cache(|cache| cache.clear());
 }
 
 /// Get the current size of the thread-local Name cache.
 ///
 /// Useful for monitoring memory usage in long-running applications.
 pub fn name_cache_size() -> usize {
+    with_name_cache(|cache| cache.len())
+}
+
+fn with_name_cache<R>(f: impl FnOnce(&mut FxHashMap<Box<str>, Name>) -> R) -> R {
     NAME_CACHE.with(|cache| {
-        // SAFETY: TLS guarantees single-threaded access
-        unsafe { (*cache.get()).len() }
+        // SAFETY: TLS guarantees single-threaded access. No borrow checking overhead.
+        f(unsafe { &mut *cache.get() })
     })
 }
 
@@ -142,20 +143,7 @@ impl Name {
     /// ```
     #[inline]
     pub fn get_or_intern(s: &str) -> Self {
-        NAME_CACHE.with(|cache| {
-            // SAFETY: TLS guarantees single-threaded access. No borrow checking overhead.
-            let cache = unsafe { &mut *cache.get() };
-
-            // Fast path: return clone from cache
-            if let Some(name) = cache.get(s) {
-                return name.clone();
-            }
-
-            // Slow path: create and cache
-            let name = Self::new(s).expect("failed to intern name");
-            cache.insert(s.into(), name.clone());
-            name
-        })
+        Self::try_get_or_intern(s).expect("failed to intern name")
     }
 
     /// Get or intern a name, returning None if interning fails.
@@ -164,10 +152,7 @@ impl Name {
     /// if the string contains null bytes.
     #[inline]
     pub fn try_get_or_intern(s: &str) -> Option<Self> {
-        NAME_CACHE.with(|cache| {
-            // SAFETY: TLS guarantees single-threaded access. No borrow checking overhead.
-            let cache = unsafe { &mut *cache.get() };
-
+        with_name_cache(|cache| {
             // Fast path: return clone from cache
             if let Some(name) = cache.get(s) {
                 return Some(name.clone());
@@ -274,10 +259,14 @@ unsafe impl Sync for Name {}
 mod tests {
     use super::*;
 
+    fn test_name(s: &str) -> Name {
+        Name::new(s).expect("failed to create name")
+    }
+
     #[test]
     fn test_name_interning() {
-        let name1 = Name::new("TEST_NAME").expect("failed to create name");
-        let name2 = Name::new("TEST_NAME").expect("failed to create name");
+        let name1 = test_name("TEST_NAME");
+        let name2 = test_name("TEST_NAME");
 
         // Both should intern to same pointer (pointer comparison)
         assert_eq!(name1, name2);
@@ -286,19 +275,19 @@ mod tests {
 
     #[test]
     fn test_name_as_str_roundtrip() {
-        let name = Name::new("PX_LAST").expect("failed to create name");
+        let name = test_name("PX_LAST");
         assert_eq!(name.as_str(), "PX_LAST");
     }
 
     #[test]
     fn test_name_display() {
-        let name = Name::new("SECURITY_DATA").expect("failed to create name");
+        let name = test_name("SECURITY_DATA");
         assert_eq!(format!("{}", name), "SECURITY_DATA");
     }
 
     #[test]
     fn test_name_debug() {
-        let name = Name::new("FIELD_DATA").expect("failed to create name");
+        let name = test_name("FIELD_DATA");
         assert_eq!(format!("{:?}", name), "Name(\"FIELD_DATA\")");
     }
 }

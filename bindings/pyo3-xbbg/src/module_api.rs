@@ -7,6 +7,27 @@ use crate::errors::register_exceptions;
 use crate::subscription::PySubscription;
 use crate::{ext, markets, recipes, PyEngine};
 
+fn package_version() -> &'static str {
+    let git_version = env!("VERGEN_GIT_DESCRIBE");
+    git_version.strip_prefix('v').unwrap_or(git_version)
+}
+
+fn register_py_functions(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(version, module)?)?;
+    module.add_function(wrap_pyfunction!(sdk_version, module)?)?;
+    module.add_function(wrap_pyfunction!(set_log_level, module)?)?;
+    module.add_function(wrap_pyfunction!(get_log_level, module)?)?;
+    module.add_function(wrap_pyfunction!(enable_sdk_logging, module)?)?;
+    Ok(())
+}
+
+fn register_py_classes(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyEngine>()?;
+    module.add_class::<PyEngineConfig>()?;
+    module.add_class::<PySubscription>()?;
+    Ok(())
+}
+
 /// Convert Arrow RecordBatch to PyArrow RecordBatch using zero-copy FFI.
 ///
 /// Uses Arrow's C Data Interface via ToPyArrow for zero-copy conversion.
@@ -72,19 +93,10 @@ pub(crate) fn enable_sdk_logging(level: &str) -> PyResult<()> {
 }
 
 pub(crate) fn register_module(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
-    let git_version = env!("VERGEN_GIT_DESCRIBE");
-    let pkg_version = git_version.strip_prefix('v').unwrap_or(git_version);
-
-    module.add("__version__", pkg_version)?;
-    module.add_function(wrap_pyfunction!(version, module)?)?;
-    module.add_function(wrap_pyfunction!(sdk_version, module)?)?;
-    module.add_class::<PyEngine>()?;
-    module.add_class::<PyEngineConfig>()?;
-    module.add_class::<PySubscription>()?;
+    module.add("__version__", package_version())?;
+    register_py_functions(module)?;
+    register_py_classes(module)?;
     register_exceptions(py, module)?;
-    module.add_function(wrap_pyfunction!(set_log_level, module)?)?;
-    module.add_function(wrap_pyfunction!(get_log_level, module)?)?;
-    module.add_function(wrap_pyfunction!(enable_sdk_logging, module)?)?;
     ext::register_ext_module(module)?;
     markets::register(module)?;
     recipes::register_recipes_module(module)?;

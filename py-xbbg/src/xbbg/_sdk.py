@@ -25,6 +25,15 @@ def _find_sdk_lib(sdk_path: Path) -> Path | None:
 
     if sys.platform == "win32":
         candidates = ["blpapi3_64.dll", "blpapi3_32.dll", "lib/blpapi3_64.dll", "lib/blpapi3_32.dll"]
+    elif sys.platform == "darwin":
+        candidates = [
+            "libblpapi3.dylib",
+            "libblpapi3_64.so",
+            "Darwin/libblpapi3.dylib",
+            "Darwin/libblpapi3_64.so",
+            "lib/libblpapi3.dylib",
+            "lib/libblpapi3_64.so",
+        ]
     else:  # Linux
         candidates = ["libblpapi3_64.so", "libblpapi3.so", "lib/libblpapi3_64.so", "lib/libblpapi3.so"]
 
@@ -241,6 +250,9 @@ def _add_sdk_to_dll_search_path() -> None:
     import os
 
     added_dirs: set[str] = set()
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is None:
+        return
 
     def try_add_dir(sdk_path: Path | None) -> None:
         """Try to add SDK library directory to DLL search path. Silently fails on errors."""
@@ -251,7 +263,7 @@ def _add_sdk_to_dll_search_path() -> None:
             if lib_path:
                 lib_dir = str(lib_path.parent)
                 if lib_dir not in added_dirs:
-                    os.add_dll_directory(lib_dir)
+                    add_dll_directory(lib_dir)
                     added_dirs.add(lib_dir)
         except (OSError, PermissionError, ValueError):
             pass  # Can't access directory or add to DLL search path

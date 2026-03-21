@@ -14,8 +14,6 @@ from collections.abc import Sequence
 from datetime import date
 from typing import Any
 
-import narwhals.stable.v1 as nw
-
 from .._sync import _syncify
 
 __all__ = ["_syncify", "_abdp_fields", "_abds_field", "_pivot_bdp_to_wide", "_fmt_date"]
@@ -49,6 +47,8 @@ def _pivot_bdp_to_wide(nw_df):
     If the dataframe already has the expected columns (not in long format),
     returns it unchanged.
     """
+    import narwhals.stable.v1 as nw
+
     # Check if already in wide format (has columns other than ticker/field/value)
     if set(nw_df.columns) != {"ticker", "field", "value"}:
         return nw_df

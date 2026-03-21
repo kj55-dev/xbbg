@@ -119,10 +119,7 @@ impl Session {
         };
 
         if ptr.is_null() {
-            return Err(BlpError::SessionStart {
-                source: None,
-                label: None,
-            });
+            return Err(session_start_error());
         }
 
         Ok(Self {
@@ -143,10 +140,7 @@ impl Session {
         let rc = unsafe { crate::ffi::blpapi_Session_start(self.ptr) };
 
         if rc != 0 {
-            return Err(BlpError::SessionStart {
-                source: None,
-                label: None,
-            });
+            return Err(session_start_error());
         }
 
         Ok(())
@@ -176,31 +170,7 @@ impl Session {
             };
             let mut saw_session_started = false;
             for msg in event.messages() {
-                match msg.message_type().as_str() {
-                    "SessionStarted" => saw_session_started = true,
-                    "SessionStartupFailure" => {
-                        return Err(startup_error_from_message("session startup failure", &msg));
-                    }
-                    "SessionTerminated" => {
-                        return Err(startup_error_from_message(
-                            "session terminated during startup",
-                            &msg,
-                        ));
-                    }
-                    "AuthorizationFailure" => {
-                        return Err(startup_error_from_message(
-                            "session identity authorization failed",
-                            &msg,
-                        ));
-                    }
-                    "AuthorizationRevoked" => {
-                        return Err(startup_error_from_message(
-                            "session identity authorization revoked",
-                            &msg,
-                        ));
-                    }
-                    _ => {}
-                }
+                handle_startup_message(&msg, &mut saw_session_started)?;
             }
             if saw_session_started {
                 return Ok(());
@@ -288,19 +258,13 @@ impl Session {
     /// # Returns
     /// Ok(()) on success, Err on failure
     pub fn open_service(&self, name: &str) -> Result<()> {
-        let c_name = CString::new(name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid service name: {}", e),
-        })?;
+        let c_name = cstring_arg("service name", name)?;
 
         // SAFETY: We're calling the Bloomberg API with valid pointers
         let rc = unsafe { crate::ffi::blpapi_Session_openService(self.ptr, c_name.as_ptr()) };
 
         if rc != 0 {
-            return Err(BlpError::OpenService {
-                service: name.to_string(),
-                source: None,
-                label: None,
-            });
+            return Err(open_service_error(name));
         }
 
         Ok(())
@@ -316,9 +280,7 @@ impl Session {
     /// # Returns
     /// A Service handle on success, or an error if the service is not open
     pub fn get_service(&self, name: &str) -> Result<Service> {
-        let c_name = CString::new(name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid service name: {}", e),
-        })?;
+        let c_name = cstring_arg("service name", name)?;
 
         let mut service_ptr: *mut crate::ffi::blpapi_Service_t = std::ptr::null_mut();
 
@@ -328,11 +290,7 @@ impl Session {
         };
 
         if rc != 0 {
-            return Err(BlpError::OpenService {
-                service: name.to_string(),
-                source: None,
-                label: None,
-            });
+            return Err(open_service_error(name));
         }
 
         Service::from_raw(service_ptr)
@@ -353,11 +311,7 @@ impl Session {
         identity: Option<&Identity>,
         cid: Option<&CorrelationId>,
     ) -> Result<CorrelationId> {
-        // Prepare correlation ID
-        let mut cid_ffi = match cid {
-            Some(c) => c.to_ffi(),
-            None => CorrelationId::default().to_ffi(),
-        };
+        let mut cid_ffi = correlation_id_ffi(cid);
 
         // Get identity pointer
         let identity_ptr = match identity {
@@ -378,11 +332,7 @@ impl Session {
             )
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_sendRequest failed with rc={}", rc),
-            });
-        }
+        check_internal_rc("blpapi_Session_sendRequest", rc)?;
 
         Ok(CorrelationId::from_ffi(&cid_ffi))
     }
@@ -396,16 +346,7 @@ impl Session {
     /// # Returns
     /// Ok(()) on success, Err on failure
     pub fn subscribe(&self, subs: &SubscriptionList, label: Option<&str>) -> Result<()> {
-        let (label_ptr, label_len, _label_cstring) = match label {
-            Some(l) => {
-                let cs = CString::new(l).map_err(|e| BlpError::InvalidArgument {
-                    detail: format!("invalid label: {}", e),
-                })?;
-                let len = l.len() as i32;
-                (cs.as_ptr(), len, Some(cs))
-            }
-            None => (std::ptr::null(), 0, None),
-        };
+        let (_label_cstring, label_ptr, label_len) = optional_cstring_arg("label", label)?;
 
         // SAFETY: We're calling the Bloomberg API with valid pointers
         let rc = unsafe {
@@ -418,11 +359,7 @@ impl Session {
             )
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_subscribe failed with rc={}", rc),
-            });
-        }
+        check_internal_rc("blpapi_Session_subscribe", rc)?;
 
         Ok(())
     }
@@ -445,11 +382,7 @@ impl Session {
             )
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_unsubscribe failed with rc={}", rc),
-            });
-        }
+        check_internal_rc("blpapi_Session_unsubscribe", rc)?;
 
         Ok(())
     }
@@ -460,11 +393,7 @@ impl Session {
             crate::ffi::blpapi_Session_cancel(self.ptr, &cid_ffi, 1, std::ptr::null(), 0)
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_cancel failed with rc={rc}"),
-            });
-        }
+        check_internal_rc("blpapi_Session_cancel", rc)?;
 
         Ok(())
     }
@@ -475,10 +404,7 @@ impl Session {
     }
 
     pub fn generate_token(&self, cid: Option<&CorrelationId>) -> Result<CorrelationId> {
-        let mut cid_ffi = match cid {
-            Some(c) => c.to_ffi(),
-            None => CorrelationId::default().to_ffi(),
-        };
+        let mut cid_ffi = correlation_id_ffi(cid);
 
         let rc = unsafe {
             crate::ffi::blpapi_Session_generateToken(
@@ -488,11 +414,7 @@ impl Session {
             )
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_generateToken failed with rc={rc}"),
-            });
-        }
+        check_internal_rc("blpapi_Session_generateToken", rc)?;
 
         Ok(CorrelationId::from_ffi(&cid_ffi))
     }
@@ -503,10 +425,7 @@ impl Session {
         identity: &mut Identity,
         cid: Option<&CorrelationId>,
     ) -> Result<CorrelationId> {
-        let mut cid_ffi = match cid {
-            Some(c) => c.to_ffi(),
-            None => CorrelationId::default().to_ffi(),
-        };
+        let mut cid_ffi = correlation_id_ffi(cid);
 
         let rc = unsafe {
             crate::ffi::blpapi_Session_sendAuthorizationRequest(
@@ -520,11 +439,7 @@ impl Session {
             )
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_sendAuthorizationRequest failed with rc={rc}"),
-            });
-        }
+        check_internal_rc("blpapi_Session_sendAuthorizationRequest", rc)?;
 
         Ok(CorrelationId::from_ffi(&cid_ffi))
     }
@@ -535,16 +450,7 @@ impl Session {
         identity: &Identity,
         label: Option<&str>,
     ) -> Result<()> {
-        let (label_ptr, label_len, _label_cstring) = match label {
-            Some(l) => {
-                let cs = CString::new(l).map_err(|e| BlpError::InvalidArgument {
-                    detail: format!("invalid label: {e}"),
-                })?;
-                let len = l.len() as i32;
-                (cs.as_ptr(), len, Some(cs))
-            }
-            None => (std::ptr::null(), 0, None),
-        };
+        let (_label_cstring, label_ptr, label_len) = optional_cstring_arg("label", label)?;
 
         let rc = unsafe {
             crate::ffi::blpapi_Session_subscribe(
@@ -556,13 +462,63 @@ impl Session {
             )
         };
 
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Session_subscribe (with identity) failed with rc={rc}"),
-            });
-        }
+        check_internal_rc("blpapi_Session_subscribe (with identity)", rc)?;
 
         Ok(())
+    }
+}
+
+fn session_start_error() -> BlpError {
+    BlpError::SessionStart {
+        source: None,
+        label: None,
+    }
+}
+
+fn cstring_arg(label: &'static str, value: &str) -> Result<CString> {
+    CString::new(value).map_err(|e| BlpError::InvalidArgument {
+        detail: format!("invalid {label}: {e}"),
+    })
+}
+
+fn optional_cstring_arg(
+    label: &'static str,
+    value: Option<&str>,
+) -> Result<(Option<CString>, *const i8, i32)> {
+    match value {
+        Some(value) => {
+            let cstring = cstring_arg(label, value)?;
+            let ptr = cstring.as_ptr();
+            let len = value.len() as i32;
+            Ok((Some(cstring), ptr, len))
+        }
+        None => Ok((None, std::ptr::null(), 0)),
+    }
+}
+
+fn correlation_id_ffi(cid: Option<&CorrelationId>) -> crate::ffi::blpapi_CorrelationId_t {
+    cid.map_or_else(|| CorrelationId::default().to_ffi(), CorrelationId::to_ffi)
+}
+
+fn open_service_error(service: &str) -> BlpError {
+    BlpError::OpenService {
+        service: service.to_string(),
+        source: None,
+        label: None,
+    }
+}
+
+fn internal_error(context: &'static str, rc: i32) -> BlpError {
+    BlpError::Internal {
+        detail: format!("{context} failed with rc={rc}"),
+    }
+}
+
+fn check_internal_rc(context: &'static str, rc: i32) -> Result<()> {
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(internal_error(context, rc))
     }
 }
 
@@ -595,6 +551,35 @@ fn extract_reason_description(msg: &Message<'_>) -> Option<String> {
         return Some(message.to_string());
     }
     None
+}
+
+fn handle_startup_message(msg: &Message<'_>, saw_session_started: &mut bool) -> Result<()> {
+    match msg.message_type().as_str() {
+        "SessionStarted" => *saw_session_started = true,
+        "SessionStartupFailure" => {
+            return Err(startup_error_from_message("session startup failure", msg));
+        }
+        "SessionTerminated" => {
+            return Err(startup_error_from_message(
+                "session terminated during startup",
+                msg,
+            ));
+        }
+        "AuthorizationFailure" => {
+            return Err(startup_error_from_message(
+                "session identity authorization failed",
+                msg,
+            ));
+        }
+        "AuthorizationRevoked" => {
+            return Err(startup_error_from_message(
+                "session identity authorization revoked",
+                msg,
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 impl Drop for Session {
@@ -633,5 +618,31 @@ mod tests {
         // If you uncomment the next line, it should NOT compile:
         // fn assert_sync<T: Sync>() {}
         // assert_sync::<Session>();
+    }
+
+    #[test]
+    fn cstring_arg_rejects_nul_bytes_with_context() {
+        let err = cstring_arg("service name", "bad\0name").unwrap_err();
+        match err {
+            BlpError::InvalidArgument { detail } => {
+                assert!(detail.contains("invalid service name"));
+                assert!(detail.contains("nul byte"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn optional_cstring_arg_none_returns_nulls() {
+        let (keepalive, ptr, len) = optional_cstring_arg("label", None).unwrap();
+        assert!(keepalive.is_none());
+        assert!(ptr.is_null());
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn correlation_id_ffi_defaults_to_unset() {
+        let ffi_cid = correlation_id_ffi(None);
+        assert_eq!(CorrelationId::from_ffi(&ffi_cid), CorrelationId::Unset);
     }
 }

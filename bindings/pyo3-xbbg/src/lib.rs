@@ -43,7 +43,8 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
+use pyo3::BoundObject;
 use pyo3_async_runtimes::tokio::future_into_py;
 use pyo3_stub_gen::{define_stub_info_gatherer, derive::*};
 use xbbg_log::{debug, info, warn};
@@ -75,30 +76,73 @@ use subscription::py_subscription_from_stream;
 #[cfg(test)]
 use subscription::{subscription_metrics_totals, SubscriptionMetricsMap};
 
-fn exchange_info_to_py(py: Python<'_>, info: &ExchangeInfo) -> PyResult<Py<PyAny>> {
+fn py_dict<'py>(
+    py: Python<'py>,
+    build: impl FnOnce(&Bound<'py, PyDict>) -> PyResult<()>,
+) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
-    dict.set_item("ticker", &info.ticker)?;
-    dict.set_item("mic", info.mic.clone())?;
-    dict.set_item("exch_code", info.exch_code.clone())?;
-    dict.set_item("timezone", &info.timezone)?;
-    dict.set_item("utc_offset", info.utc_offset)?;
-    dict.set_item("source", info.source.as_str())?;
-    dict.set_item("day", info.sessions.day.clone())?;
-    dict.set_item("allday", info.sessions.allday.clone())?;
-    dict.set_item("pre", info.sessions.pre.clone())?;
-    dict.set_item("post", info.sessions.post.clone())?;
-    dict.set_item("am", info.sessions.am.clone())?;
-    dict.set_item("pm", info.sessions.pm.clone())?;
+    build(&dict)?;
     Ok(dict.into_any().unbind())
 }
 
+fn py_list<'py, I, T>(py: Python<'py>, items: I) -> PyResult<Py<PyAny>>
+where
+    I: IntoIterator<Item = T>,
+    I::IntoIter: ExactSizeIterator,
+    T: IntoPyObject<'py>,
+{
+    Ok(PyList::new(py, items)?.into_any().unbind())
+}
+
+fn py_any<'py, T>(py: Python<'py>, value: T) -> PyResult<Py<PyAny>>
+where
+    T: IntoPyObject<'py>,
+    PyErr: From<<T as IntoPyObject<'py>>::Error>,
+{
+    Ok(value.into_pyobject(py)?.into_any().unbind())
+}
+
+fn parse_overflow_policy(policy: Option<&str>) -> Option<OverflowPolicy> {
+    policy.map(|value| match value {
+        "drop_oldest" => OverflowPolicy::DropOldest,
+        "block" => OverflowPolicy::Block,
+        _ => OverflowPolicy::DropNewest,
+    })
+}
+
+fn parse_recovery_policy(policy: Option<&str>) -> Option<SubscriptionRecoveryPolicy> {
+    policy.map(|value| match value {
+        "resubscribe" => SubscriptionRecoveryPolicy::Resubscribe,
+        _ => SubscriptionRecoveryPolicy::None,
+    })
+}
+
+fn exchange_info_to_py(py: Python<'_>, info: &ExchangeInfo) -> PyResult<Py<PyAny>> {
+    py_dict(py, |dict| {
+        dict.set_item("ticker", &info.ticker)?;
+        dict.set_item("mic", info.mic.clone())?;
+        dict.set_item("exch_code", info.exch_code.clone())?;
+        dict.set_item("timezone", &info.timezone)?;
+        dict.set_item("utc_offset", info.utc_offset)?;
+        dict.set_item("source", info.source.as_str())?;
+        dict.set_item("day", info.sessions.day.clone())?;
+        dict.set_item("allday", info.sessions.allday.clone())?;
+        dict.set_item("pre", info.sessions.pre.clone())?;
+        dict.set_item("post", info.sessions.post.clone())?;
+        dict.set_item("am", info.sessions.am.clone())?;
+        dict.set_item("pm", info.sessions.pm.clone())?;
+        Ok(())
+    })
+}
+
 fn market_info_to_py(py: Python<'_>, info: &MarketInfo) -> PyResult<Py<PyAny>> {
-    let dict = PyDict::new(py);
-    dict.set_item("exch", info.exch.clone())?;
-    dict.set_item("tz", info.tz.clone())?;
-    dict.set_item("freq", info.freq.clone())?;
-    dict.set_item("is_fut", info.is_fut)?;
-    Ok(dict.into_any().unbind())
+    py_dict(py, |dict| {
+        dict.set_item("exch", info.exch.clone())?;
+        dict.set_item("tz", info.tz.clone())?;
+        dict.set_item("freq", info.freq.clone())?;
+        dict.set_item("is_fut", info.is_fut)?;
+        Ok(())
+    })
 }
 
 /// Python wrapper for the xbbg Engine.
@@ -273,7 +317,7 @@ impl PyEngine {
                 .resolve_market_timing(&ticker, date, timing, tz.as_deref())
                 .await
                 .map_err(blp_async_error_to_pyerr)?;
-            Python::attach(|py| Ok(value.into_pyobject(py)?.into_any().unbind()))
+            Python::attach(|py| py_any(py, value))
         })
     }
 
@@ -315,11 +359,12 @@ impl PyEngine {
                 .map_err(blp_async_error_to_pyerr)?;
 
             Python::attach(|py| {
-                let dict = PyDict::new(py);
-                for (k, v) in resolved {
-                    dict.set_item(k, v)?;
-                }
-                Ok(dict.into_any().unbind())
+                py_dict(py, |dict| {
+                    for (k, v) in resolved {
+                        dict.set_item(k, v)?;
+                    }
+                    Ok(())
+                })
             })
         })
     }
@@ -351,10 +396,11 @@ impl PyEngine {
     /// Get field cache statistics including the active cache path.
     fn field_cache_stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let (entry_count, cache_path) = self.engine.field_cache_stats();
-        let dict = PyDict::new(py);
-        dict.set_item("entry_count", entry_count)?;
-        dict.set_item("cache_path", cache_path.to_string_lossy().into_owned())?;
-        Ok(dict.into())
+        py_dict(py, |dict| {
+            dict.set_item("entry_count", entry_count)?;
+            dict.set_item("cache_path", cache_path.to_string_lossy().into_owned())?;
+            Ok(())
+        })
     }
 
     /// Validate Bloomberg field names.
@@ -378,7 +424,7 @@ impl PyEngine {
                 .await
                 .map_err(blp_async_error_to_pyerr)?;
 
-            Python::attach(|py| Ok(invalid.into_pyobject(py)?.into_any().unbind()))
+            Python::attach(|py| py_list(py, invalid))
         })
     }
 
@@ -404,7 +450,7 @@ impl PyEngine {
             let json = serde_json::to_string(&*schema)
                 .map_err(|e| PyRuntimeError::new_err(format!("serialize schema: {e}")))?;
 
-            Python::attach(|py| Ok(json.into_pyobject(py)?.into_any().unbind()))
+            Python::attach(|py| py_any(py, json))
         })
     }
 
@@ -429,7 +475,7 @@ impl PyEngine {
             let json = serde_json::to_string(&op)
                 .map_err(|e| PyRuntimeError::new_err(format!("serialize operation: {e}")))?;
 
-            Python::attach(|py| Ok(json.into_pyobject(py)?.into_any().unbind()))
+            Python::attach(|py| py_any(py, json))
         })
     }
 
@@ -448,10 +494,7 @@ impl PyEngine {
                 .await
                 .map_err(blp_async_error_to_pyerr)?;
 
-            Python::attach(|py| {
-                let list = pyo3::types::PyList::new(py, ops)?;
-                Ok(list.into_any().unbind())
-            })
+            Python::attach(|py| py_list(py, ops))
         })
     }
 
@@ -503,10 +546,7 @@ impl PyEngine {
                 .map_err(blp_async_error_to_pyerr)?;
 
             Python::attach(|py| match values {
-                Some(v) => {
-                    let list = pyo3::types::PyList::new(py, v)?;
-                    Ok(list.into_any().unbind())
-                }
+                Some(v) => py_list(py, v),
                 None => Ok(py.None()),
             })
         })
@@ -529,10 +569,7 @@ impl PyEngine {
                 .map_err(blp_async_error_to_pyerr)?;
 
             Python::attach(|py| match elements {
-                Some(v) => {
-                    let list = pyo3::types::PyList::new(py, v)?;
-                    Ok(list.into_any().unbind())
-                }
+                Some(v) => py_list(py, v),
                 None => Ok(py.None()),
             })
         })
@@ -571,15 +608,8 @@ impl PyEngine {
         let tickers_clone = tickers.clone();
         let fields_clone = fields.clone();
 
-        let op = overflow_policy.as_deref().map(|s| match s {
-            "drop_oldest" => OverflowPolicy::DropOldest,
-            "block" => OverflowPolicy::Block,
-            _ => OverflowPolicy::DropNewest,
-        });
-        let recovery = recovery_policy.as_deref().map(|s| match s {
-            "resubscribe" => SubscriptionRecoveryPolicy::Resubscribe,
-            _ => SubscriptionRecoveryPolicy::None,
-        });
+        let op = parse_overflow_policy(overflow_policy.as_deref());
+        let recovery = parse_recovery_policy(recovery_policy.as_deref());
 
         debug!(
             tickers = ?tickers,
@@ -651,15 +681,8 @@ impl PyEngine {
         let options_clone = options.clone().unwrap_or_default();
         let service_clone = service.clone();
 
-        let op = overflow_policy.as_deref().map(|s| match s {
-            "drop_oldest" => OverflowPolicy::DropOldest,
-            "block" => OverflowPolicy::Block,
-            _ => OverflowPolicy::DropNewest,
-        });
-        let recovery = recovery_policy.as_deref().map(|s| match s {
-            "resubscribe" => SubscriptionRecoveryPolicy::Resubscribe,
-            _ => SubscriptionRecoveryPolicy::None,
-        });
+        let op = parse_overflow_policy(overflow_policy.as_deref());
+        let recovery = parse_recovery_policy(recovery_policy.as_deref());
 
         debug!(
             service = %service,
@@ -845,6 +868,113 @@ mod tests {
             };
             assert!(err.to_string().contains("app_name is required"));
         });
+    }
+
+    #[test]
+    fn py_dict_helper_builds_python_dict_with_mixed_values() {
+        Python::initialize();
+        Python::attach(|py| {
+            let dict = py_dict(py, |dict| {
+                dict.set_item("ticker", "AAPL")?;
+                dict.set_item("count", 3)?;
+                dict.set_item("enabled", true)?;
+                Ok(())
+            })
+            .expect("dict");
+            let dict = dict
+                .bind(py)
+                .clone()
+                .cast_into::<PyDict>()
+                .expect("py dict");
+
+            assert_eq!(
+                dict.get_item("ticker")
+                    .expect("ticker item")
+                    .expect("ticker value")
+                    .extract::<String>()
+                    .expect("ticker string"),
+                "AAPL"
+            );
+            assert_eq!(
+                dict.get_item("count")
+                    .expect("count item")
+                    .expect("count value")
+                    .extract::<i64>()
+                    .expect("count int"),
+                3
+            );
+            assert!(dict
+                .get_item("enabled")
+                .expect("enabled item")
+                .expect("enabled value")
+                .extract::<bool>()
+                .expect("enabled bool"));
+        });
+    }
+
+    #[test]
+    fn py_list_helper_builds_python_list_in_order() {
+        Python::initialize();
+        Python::attach(|py| {
+            let list = py_list(py, ["AAPL", "MSFT", "NVDA"]).expect("list");
+            let list = list
+                .bind(py)
+                .clone()
+                .cast_into::<PyList>()
+                .expect("py list");
+
+            assert_eq!(
+                list.get_item(0)
+                    .expect("first item")
+                    .extract::<String>()
+                    .expect("first string"),
+                "AAPL"
+            );
+            assert_eq!(
+                list.get_item(1)
+                    .expect("second item")
+                    .extract::<String>()
+                    .expect("second string"),
+                "MSFT"
+            );
+            assert_eq!(
+                list.get_item(2)
+                    .expect("third item")
+                    .extract::<String>()
+                    .expect("third string"),
+                "NVDA"
+            );
+        });
+    }
+
+    #[test]
+    fn parse_overflow_policy_maps_known_values() {
+        assert_eq!(parse_overflow_policy(None), None);
+        assert_eq!(
+            parse_overflow_policy(Some("drop_oldest")),
+            Some(OverflowPolicy::DropOldest)
+        );
+        assert_eq!(
+            parse_overflow_policy(Some("block")),
+            Some(OverflowPolicy::Block)
+        );
+        assert_eq!(
+            parse_overflow_policy(Some("anything_else")),
+            Some(OverflowPolicy::DropNewest)
+        );
+    }
+
+    #[test]
+    fn parse_recovery_policy_maps_known_values() {
+        assert_eq!(parse_recovery_policy(None), None);
+        assert_eq!(
+            parse_recovery_policy(Some("resubscribe")),
+            Some(SubscriptionRecoveryPolicy::Resubscribe)
+        );
+        assert_eq!(
+            parse_recovery_policy(Some("anything_else")),
+            Some(SubscriptionRecoveryPolicy::None)
+        );
     }
 
     #[test]

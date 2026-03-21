@@ -14,7 +14,7 @@
     version by querying Bloomberg's Python Simple Index (PEP 503).
 
 .PARAMETER Version
-    SDK version (e.g., "3.25.12.1"). When omitted during add, automatically
+    SDK version (e.g., "3.x.y.z"). When omitted during add, automatically
     resolves the latest available version from Bloomberg's servers.
     Required when using -Remove.
 
@@ -40,7 +40,7 @@
     # Resolves and adds the latest SDK version, sets it active.
 
 .EXAMPLE
-    .\scripts\sdktool.ps1 -Version 3.25.12.1
+    .\scripts\sdktool.ps1 -Version <version>
     # Adds a specific version and sets it active.
 
 .EXAMPLE
@@ -48,8 +48,8 @@
     # Adds 3.24.0.1 without changing the active SDK.
 
 .EXAMPLE
-    .\scripts\sdktool.ps1 -Remove 3.25.12.1
-    # Removes version 3.25.12.1 and its cached zip.
+    .\scripts\sdktool.ps1 -Remove <version>
+    # Removes the selected version and its cached zip.
 
 .EXAMPLE
     .\scripts\sdktool.ps1 -List
@@ -154,7 +154,7 @@ function Get-ActiveSdkVersion {
             Where-Object { $_ -match '^\s*XBBG_DEV_SDK_ROOT\s*=' }
 
     if ($line) {
-        # Extract version from path like vendor/blpapi-sdk/3.25.12.1
+        # Extract version from path like vendor/blpapi-sdk/3.x.y.z
         if ($line -match 'vendor/blpapi-sdk/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') {
             return $Matches[1]
         }
@@ -231,7 +231,7 @@ if ($PSCmdlet.ParameterSetName -eq 'CleanCache') {
 # ---------------------------------------------------------------------------
 if ($PSCmdlet.ParameterSetName -eq 'Remove') {
     if ($Version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-        throw "Invalid version format: '$Version'. Expected format: X.Y.Z or X.Y.Z.W (e.g., 3.25.12.1)"
+        throw "Invalid version format: '$Version'. Expected format: X.Y.Z or X.Y.Z.W (e.g., 3.26.1.1)"
     }
 
     $VersionDir = Join-Path $VendorBase $Version
@@ -329,7 +329,7 @@ if (-not $Version) {
     $Version = Resolve-LatestVersion
 }
 elseif ($Version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-    throw "Invalid version format: '$Version'. Expected format: X.Y.Z or X.Y.Z.W (e.g., 3.25.12.1)"
+    throw "Invalid version format: '$Version'. Expected format: X.Y.Z or X.Y.Z.W (e.g., 3.26.1.1)"
 }
 
 $VersionDir  = Join-Path $VendorBase $Version
@@ -402,7 +402,7 @@ try {
 
     Expand-Archive -Path $ZipPath -DestinationPath $TempExtract -Force
 
-    # The zip contains a top-level folder like blpapi_cpp_3.25.12.1-windows/
+    # The zip contains a top-level folder like blpapi_cpp_<version>-windows/
     # We need to move its contents into vendor/blpapi-sdk/<version>/
     $innerDirs = @(Get-ChildItem -Path $TempExtract -Directory)
 

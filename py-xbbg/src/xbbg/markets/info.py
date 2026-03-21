@@ -94,8 +94,7 @@ def exch_info(ticker: str, **kwargs) -> pd.Series:
 
 def market_info(ticker: str) -> pd.Series:
     """Get market info for a ticker using Bloomberg metadata fields."""
-    xbbg_module = importlib.import_module("xbbg")
-    bdp_fn = cast("Any", xbbg_module.bdp)
+    from xbbg.blp import bdp
 
     t_info = ticker.split()
     if len(t_info) < 2:
@@ -119,7 +118,7 @@ def market_info(ticker: str) -> pd.Series:
         fields.append("FUT_GEN_MONTH")
 
     try:
-        raw = bdp_fn(tickers=ticker, flds=fields)
+        raw = bdp(tickers=ticker, flds=fields)
         result = _to_pandas_wide(raw)
     except Exception as e:
         logger.warning("Failed to get market info from Bloomberg for %s: %s", ticker, e)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 import inspect
-from typing import Any
+from typing import Any, cast
 
 from ._sync import _build_sync_wrapper
 
@@ -47,7 +47,10 @@ async def _execute_generated_endpoint(
 ) -> Any:
     """Execute a generated endpoint using the provided request/conversion callbacks."""
     plan_or_awaitable = spec.builder(call_args)
-    plan = await plan_or_awaitable if inspect.isawaitable(plan_or_awaitable) else plan_or_awaitable
+    if inspect.isawaitable(plan_or_awaitable):
+        plan = await cast("Awaitable[_EndpointPlan]", plan_or_awaitable)
+    else:
+        plan = plan_or_awaitable
 
     request_kwargs = dict(plan.request_kwargs)
     if plan.extractor is not None:

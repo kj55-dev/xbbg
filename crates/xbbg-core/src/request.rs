@@ -4,6 +4,7 @@ use std::ffi::CString;
 
 use crate::element::Element;
 use crate::errors::{BlpError, Result};
+use crate::ffi;
 use crate::name::Name;
 
 /// Request object for sending to Bloomberg services.
@@ -40,6 +41,104 @@ unsafe impl Send for Request {}
 
 // SAFETY: Request can be shared between threads (though typically used from one thread)
 unsafe impl Sync for Request {}
+
+fn cstring(label: &str, value: &str) -> Result<CString> {
+    CString::new(value).map_err(|e| BlpError::InvalidArgument {
+        detail: format!("invalid {label}: {e}"),
+    })
+}
+
+fn append_element_string(
+    array_element: *mut ffi::blpapi_Element_t,
+    value: &str,
+    context: &str,
+) -> Result<()> {
+    let c_value = cstring("string value", value)?;
+
+    // SAFETY: `array_element` is a valid Bloomberg array element pointer and
+    // `c_value` is a valid C string. `BLPAPI_ELEMENT_INDEX_END` indicates append.
+    let rc = unsafe {
+        ffi::blpapi_Element_setValueString(
+            array_element,
+            c_value.as_ptr(),
+            ffi::BLPAPI_ELEMENT_INDEX_END as usize,
+        )
+    };
+
+    if rc != 0 {
+        return Err(BlpError::Internal {
+            detail: format!("{context} failed with rc={rc}"),
+        });
+    }
+
+    Ok(())
+}
+
+fn set_element_string_value(
+    element: *mut ffi::blpapi_Element_t,
+    name: &str,
+    value: &str,
+    context: &str,
+) -> Result<()> {
+    let c_name = cstring("name", name)?;
+    let c_value = cstring("string value", value)?;
+
+    // SAFETY: `element` is a valid Bloomberg element pointer and the C strings
+    // live for the duration of the call.
+    let rc = unsafe {
+        ffi::blpapi_Element_setElementString(
+            element,
+            c_name.as_ptr(),
+            std::ptr::null(),
+            c_value.as_ptr(),
+        )
+    };
+
+    if rc != 0 {
+        return Err(BlpError::Internal {
+            detail: format!("{context} failed with rc={rc}"),
+        });
+    }
+
+    Ok(())
+}
+
+fn set_element_int32_value(
+    element: *mut ffi::blpapi_Element_t,
+    name: &str,
+    value: i32,
+    context: &str,
+) -> Result<()> {
+    let c_name = cstring("name", name)?;
+
+    // SAFETY: `element` is a valid Bloomberg element pointer and `c_name`
+    // lives for the duration of the call.
+    let rc = unsafe {
+        ffi::blpapi_Element_setElementInt32(element, c_name.as_ptr(), std::ptr::null(), value)
+    };
+
+    if rc != 0 {
+        return Err(BlpError::Internal {
+            detail: format!("{context} failed with rc={rc}"),
+        });
+    }
+
+    Ok(())
+}
+
+fn split_nested_path(path: &str) -> Result<(Vec<&str>, &str)> {
+    if path.is_empty() {
+        return Err(BlpError::InvalidArgument {
+            detail: "empty path".into(),
+        });
+    }
+
+    let mut segments: Vec<&str> = path.split('.').collect();
+    let leaf_name = segments.pop().ok_or_else(|| BlpError::InvalidArgument {
+        detail: "empty path".into(),
+    })?;
+    Ok((segments, leaf_name))
+}
 
 impl Request {
     /// Create a Request from a raw pointer (internal use only)
@@ -98,29 +197,7 @@ impl Request {
                 detail: format!("element '{}' not found", array_name.as_str()),
             })?;
 
-        let c_value = CString::new(value).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid string value: {}", e),
-        })?;
-
-        // SAFETY: We're calling the Bloomberg API with valid pointers
-        // - array_elem.as_ptr() is valid for the lifetime of the element
-        // - c_value is a valid C string
-        // - BLPAPI_ELEMENT_INDEX_END indicates append operation
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setValueString(
-                array_elem.as_ptr(),
-                c_value.as_ptr(),
-                crate::ffi::BLPAPI_ELEMENT_INDEX_END as usize,
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Element_setValueString failed with rc={}", rc),
-            });
-        }
-
-        Ok(())
+        append_element_string(array_elem.as_ptr(), value, "blpapi_Element_setValueString")
     }
 
     /// Append a string value to an array element by string name.
@@ -142,58 +219,17 @@ impl Request {
                 detail: format!("element '{}' not found", array_name),
             })?;
 
-        let c_value = CString::new(value).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid string value: {}", e),
-        })?;
-
-        // SAFETY: array_elem.as_ptr() is valid, c_value is a valid C string.
-        // BLPAPI_ELEMENT_INDEX_END indicates append operation.
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setValueString(
-                array_elem.as_ptr(),
-                c_value.as_ptr(),
-                crate::ffi::BLPAPI_ELEMENT_INDEX_END as usize,
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Element_setValueString failed with rc={}", rc),
-            });
-        }
-
-        Ok(())
+        append_element_string(array_elem.as_ptr(), value, "blpapi_Element_setValueString")
     }
 
     /// Set a string value on an element
     pub fn set_string(&mut self, name: &Name, value: &str) -> Result<()> {
-        let root = self.elements();
-
-        let c_name = CString::new(name.as_str()).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
-
-        let c_value = CString::new(value).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid string value: {}", e),
-        })?;
-
-        // SAFETY: We're calling the Bloomberg API with valid pointers
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementString(
-                root.as_ptr(),
-                c_name.as_ptr(),
-                std::ptr::null(),
-                c_value.as_ptr(),
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Element_setElementString failed with rc={}", rc),
-            });
-        }
-
-        Ok(())
+        set_element_string_value(
+            self.elements().as_ptr(),
+            name.as_str(),
+            value,
+            "blpapi_Element_setElementString",
+        )
     }
 
     /// Set a string value on a scalar element by string name.
@@ -208,60 +244,22 @@ impl Request {
     /// req.set_str("currency", "USD")?;
     /// ```
     pub fn set_str(&mut self, name: &str, value: &str) -> Result<()> {
-        let root = self.elements();
-
-        let c_name = CString::new(name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
-
-        let c_value = CString::new(value).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid string value: {}", e),
-        })?;
-
-        // SAFETY: We're calling the Bloomberg API with valid pointers
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementString(
-                root.as_ptr(),
-                c_name.as_ptr(),
-                std::ptr::null(),
-                c_value.as_ptr(),
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("set_str('{}') failed with rc={}", name, rc),
-            });
-        }
-
-        Ok(())
+        set_element_string_value(
+            self.elements().as_ptr(),
+            name,
+            value,
+            &format!("set_str('{name}')"),
+        )
     }
 
     /// Set an i32 value on an element
     pub fn set_i32(&mut self, name: &Name, value: i32) -> Result<()> {
-        let root = self.elements();
-
-        let c_name = CString::new(name.as_str()).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
-
-        // SAFETY: We're calling the Bloomberg API with valid pointers
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementInt32(
-                root.as_ptr(),
-                c_name.as_ptr(),
-                std::ptr::null(),
-                value,
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("blpapi_Element_setElementInt32 failed with rc={}", rc),
-            });
-        }
-
-        Ok(())
+        set_element_int32_value(
+            self.elements().as_ptr(),
+            name.as_str(),
+            value,
+            "blpapi_Element_setElementInt32",
+        )
     }
 
     /// Set an i64 value on an element by name.
@@ -295,9 +293,7 @@ impl Request {
     pub fn set_f64(&mut self, name: &Name, value: f64) -> Result<()> {
         let root = self.elements();
 
-        let c_name = CString::new(name.as_str()).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
+        let c_name = cstring("name", name.as_str())?;
 
         // SAFETY: We're calling the Bloomberg API with valid pointers
         let rc = unsafe {
@@ -324,37 +320,13 @@ impl Request {
     /// Bloomberg Bool-typed elements don't accept Int32 values via
     /// `blpapi_Element_setElementInt32` (fails with rc=262156 type mismatch).
     pub fn set_bool(&mut self, name: &Name, value: bool) -> Result<()> {
-        let root = self.elements();
-
-        let c_name = CString::new(name.as_str()).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
-
         let bool_str = if value { "true" } else { "false" };
-        let c_value = CString::new(bool_str).unwrap();
-
-        // SAFETY: We're calling the Bloomberg API with valid pointers
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementString(
-                root.as_ptr(),
-                c_name.as_ptr(),
-                std::ptr::null(),
-                c_value.as_ptr(),
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!(
-                    "set_bool('{}', {}) failed with rc={}",
-                    name.as_str(),
-                    value,
-                    rc
-                ),
-            });
-        }
-
-        Ok(())
+        set_element_string_value(
+            self.elements().as_ptr(),
+            name.as_str(),
+            bool_str,
+            &format!("set_bool('{}', {})", name.as_str(), value),
+        )
     }
 
     /// Set a datetime value on a scalar element by string name.
@@ -406,29 +378,12 @@ impl Request {
     /// req.set_int("interval", 5)?;  // 5-minute bars
     /// ```
     pub fn set_int(&mut self, name: &str, value: i32) -> Result<()> {
-        let root = self.elements();
-
-        let c_name = CString::new(name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
-
-        // SAFETY: We're calling the Bloomberg API with valid pointers
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementInt32(
-                root.as_ptr(),
-                c_name.as_ptr(),
-                std::ptr::null(),
-                value,
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("set_int('{}') failed with rc={}", name, rc),
-            });
-        }
-
-        Ok(())
+        set_element_int32_value(
+            self.elements().as_ptr(),
+            name,
+            value,
+            &format!("set_int('{name}')"),
+        )
     }
 
     /// Append a new element to a sequence/array element and return a mutable handle.
@@ -486,30 +441,12 @@ impl Request {
         name: &str,
         value: &str,
     ) -> Result<()> {
-        let c_name = CString::new(name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name: {}", e),
-        })?;
-        let c_value = CString::new(value).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid value: {}", e),
-        })?;
-
-        // SAFETY: element is a valid pointer from get_or_create_element/append_element
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementString(
-                element,
-                c_name.as_ptr(),
-                std::ptr::null(),
-                c_value.as_ptr(),
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("set_element_string('{}') failed with rc={}", name, rc),
-            });
-        }
-
-        Ok(())
+        set_element_string_value(
+            element,
+            name,
+            value,
+            &format!("set_element_string('{name}')"),
+        )
     }
 
     /// Get or create a child element by name.
@@ -565,23 +502,15 @@ impl Request {
     /// req.set_nested_str("priceSource.dataRange.historical.startDate", "20240101")?;
     /// ```
     pub fn set_nested_str(&mut self, path: &str, value: &str) -> Result<()> {
-        let segments: Vec<&str> = path.split('.').collect();
-        if segments.is_empty() {
-            return Err(BlpError::InvalidArgument {
-                detail: "empty path".into(),
-            });
-        }
-
-        // Navigate to parent element (all but last segment)
+        let (parent_segments, leaf_name) = split_nested_path(path)?;
         let mut current = self.elements().as_ptr();
-        for segment in &segments[..segments.len() - 1] {
-            let c_name = CString::new(*segment).map_err(|e| BlpError::InvalidArgument {
-                detail: format!("invalid segment '{}': {}", segment, e),
-            })?;
+
+        for segment in parent_segments {
+            let c_name = cstring("segment", segment)?;
 
             let mut next = std::mem::MaybeUninit::uninit();
             let rc = unsafe {
-                crate::ffi::blpapi_Element_getElement(
+                ffi::blpapi_Element_getElement(
                     current,
                     next.as_mut_ptr(),
                     c_name.as_ptr(),
@@ -598,31 +527,12 @@ impl Request {
             current = unsafe { next.assume_init() };
         }
 
-        // Set value on the leaf element
-        let leaf_name = segments.last().unwrap();
-        let c_name = CString::new(*leaf_name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name '{}': {}", leaf_name, e),
-        })?;
-        let c_value = CString::new(value).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid value: {}", e),
-        })?;
-
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementString(
-                current,
-                c_name.as_ptr(),
-                std::ptr::null(),
-                c_value.as_ptr(),
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("set_nested_str('{}') failed with rc={}", path, rc),
-            });
-        }
-
-        Ok(())
+        set_element_string_value(
+            current,
+            leaf_name,
+            value,
+            &format!("set_nested_str('{path}')"),
+        )
     }
 
     /// Set an integer value on a nested element using a dotted path.
@@ -632,23 +542,15 @@ impl Request {
     /// req.set_nested_int("studyAttributes.smavgStudyAttributes.period", 20)?;
     /// ```
     pub fn set_nested_int(&mut self, path: &str, value: i32) -> Result<()> {
-        let segments: Vec<&str> = path.split('.').collect();
-        if segments.is_empty() {
-            return Err(BlpError::InvalidArgument {
-                detail: "empty path".into(),
-            });
-        }
-
-        // Navigate to parent element (all but last segment)
+        let (parent_segments, leaf_name) = split_nested_path(path)?;
         let mut current = self.elements().as_ptr();
-        for segment in &segments[..segments.len() - 1] {
-            let c_name = CString::new(*segment).map_err(|e| BlpError::InvalidArgument {
-                detail: format!("invalid segment '{}': {}", segment, e),
-            })?;
+
+        for segment in parent_segments {
+            let c_name = cstring("segment", segment)?;
 
             let mut next = std::mem::MaybeUninit::uninit();
             let rc = unsafe {
-                crate::ffi::blpapi_Element_getElement(
+                ffi::blpapi_Element_getElement(
                     current,
                     next.as_mut_ptr(),
                     c_name.as_ptr(),
@@ -665,28 +567,12 @@ impl Request {
             current = unsafe { next.assume_init() };
         }
 
-        // Set value on the leaf element
-        let leaf_name = segments.last().unwrap();
-        let c_name = CString::new(*leaf_name).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid name '{}': {}", leaf_name, e),
-        })?;
-
-        let rc = unsafe {
-            crate::ffi::blpapi_Element_setElementInt32(
-                current,
-                c_name.as_ptr(),
-                std::ptr::null(),
-                value,
-            )
-        };
-
-        if rc != 0 {
-            return Err(BlpError::Internal {
-                detail: format!("set_nested_int('{}') failed with rc={}", path, rc),
-            });
-        }
-
-        Ok(())
+        set_element_int32_value(
+            current,
+            leaf_name,
+            value,
+            &format!("set_nested_int('{path}')"),
+        )
     }
 }
 
@@ -764,6 +650,55 @@ fn parse_datetime(s: &str) -> Result<crate::ffi::blpapi_Datetime_t> {
     }
 
     Ok(dt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_datetime, split_nested_path};
+    use crate::ffi::{
+        BLPAPI_DATETIME_DATE_PART, BLPAPI_DATETIME_HOURS_PART, BLPAPI_DATETIME_MINUTES_PART,
+        BLPAPI_DATETIME_SECONDS_PART,
+    };
+
+    #[test]
+    fn split_nested_path_returns_parent_segments_and_leaf() {
+        let (parents, leaf) =
+            split_nested_path("priceSource.dataRange.historical.startDate").unwrap();
+
+        assert_eq!(parents, vec!["priceSource", "dataRange", "historical"]);
+        assert_eq!(leaf, "startDate");
+    }
+
+    #[test]
+    fn split_nested_path_rejects_empty_path() {
+        assert!(split_nested_path("").is_err());
+    }
+
+    #[test]
+    fn parse_datetime_supports_date_only() {
+        let dt = parse_datetime("2024-01-15").unwrap();
+
+        assert_eq!(dt.year, 2024);
+        assert_eq!(dt.month, 1);
+        assert_eq!(dt.day, 15);
+        assert_eq!(dt.parts, BLPAPI_DATETIME_DATE_PART);
+    }
+
+    #[test]
+    fn parse_datetime_supports_full_timestamp() {
+        let dt = parse_datetime("2024-01-15T09:30:45").unwrap();
+
+        assert_eq!(dt.hours, 9);
+        assert_eq!(dt.minutes, 30);
+        assert_eq!(dt.seconds, 45);
+        assert_eq!(
+            dt.parts,
+            BLPAPI_DATETIME_DATE_PART
+                | BLPAPI_DATETIME_HOURS_PART
+                | BLPAPI_DATETIME_MINUTES_PART
+                | BLPAPI_DATETIME_SECONDS_PART
+        );
+    }
 }
 
 impl Drop for Request {

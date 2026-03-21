@@ -27,6 +27,14 @@ pub(crate) type SubscriptionMetricsMap = HashMap<usize, Arc<SubscriptionMetrics>
 pub(crate) type SubscriptionEventTuple =
     (i64, String, String, String, Option<String>, Option<String>);
 
+macro_rules! py_dict {
+    ($py:expr, $( $key:expr => $value:expr ),+ $(,)?) => {{
+        let dict = PyDict::new($py);
+        $(dict.set_item($key, $value)?;)+
+        Ok(dict.into_any().unbind())
+    }};
+}
+
 #[gen_stub_pyclass]
 #[pyclass]
 pub struct PySubscription {
@@ -461,73 +469,52 @@ pub(crate) async fn unsubscribe_subscription(
 }
 
 pub(crate) fn stats_to_py(py: Python<'_>, snapshot: SubscriptionSnapshot) -> PyResult<Py<PyAny>> {
-    let dict = PyDict::new(py);
-    dict.set_item("messages_received", snapshot.messages_received)?;
-    dict.set_item("dropped_batches", snapshot.dropped_batches)?;
-    dict.set_item("batches_sent", snapshot.batches_sent)?;
-    dict.set_item("slow_consumer", snapshot.slow_consumer)?;
-    dict.set_item("data_loss_events", snapshot.data_loss_events)?;
-    dict.set_item("last_message_us", snapshot.last_message_us)?;
-    dict.set_item("last_data_loss_us", snapshot.last_data_loss_us)?;
-    dict.set_item(
-        "effective_overflow_policy",
-        snapshot.effective_overflow_policy,
-    )?;
-    Ok(dict.into())
+    py_dict!(
+        py,
+        "messages_received" => snapshot.messages_received,
+        "dropped_batches" => snapshot.dropped_batches,
+        "batches_sent" => snapshot.batches_sent,
+        "slow_consumer" => snapshot.slow_consumer,
+        "data_loss_events" => snapshot.data_loss_events,
+        "last_message_us" => snapshot.last_message_us,
+        "last_data_loss_us" => snapshot.last_data_loss_us,
+        "effective_overflow_policy" => snapshot.effective_overflow_policy,
+    )
 }
 
 pub(crate) fn session_status_to_py(
     py: Python<'_>,
     snapshot: SubscriptionSnapshot,
 ) -> PyResult<Py<PyAny>> {
-    let dict = PyDict::new(py);
-    dict.set_item("state", snapshot.session.state.as_str())?;
-    dict.set_item("last_change_us", snapshot.session.last_change_us)?;
-    dict.set_item("disconnect_count", snapshot.session.disconnect_count)?;
-    dict.set_item("reconnect_count", snapshot.session.reconnect_count)?;
-    dict.set_item("recovery_policy", snapshot.session.recovery_policy.as_str())?;
-    dict.set_item(
-        "recovery_attempt_count",
-        snapshot.session.recovery_attempt_count,
-    )?;
-    dict.set_item(
-        "recovery_success_count",
-        snapshot.session.recovery_success_count,
-    )?;
-    dict.set_item(
-        "last_recovery_attempt_us",
-        snapshot.session.last_recovery_attempt_us,
-    )?;
-    dict.set_item(
-        "last_recovery_success_us",
-        snapshot.session.last_recovery_success_us,
-    )?;
-    dict.set_item("last_recovery_error", snapshot.session.last_recovery_error)?;
-    Ok(dict.into())
+    py_dict!(
+        py,
+        "state" => snapshot.session.state.as_str(),
+        "last_change_us" => snapshot.session.last_change_us,
+        "disconnect_count" => snapshot.session.disconnect_count,
+        "reconnect_count" => snapshot.session.reconnect_count,
+        "recovery_policy" => snapshot.session.recovery_policy.as_str(),
+        "recovery_attempt_count" => snapshot.session.recovery_attempt_count,
+        "recovery_success_count" => snapshot.session.recovery_success_count,
+        "last_recovery_attempt_us" => snapshot.session.last_recovery_attempt_us,
+        "last_recovery_success_us" => snapshot.session.last_recovery_success_us,
+        "last_recovery_error" => snapshot.session.last_recovery_error,
+    )
 }
 
 pub(crate) fn admin_status_to_py(
     py: Python<'_>,
     snapshot: SubscriptionSnapshot,
 ) -> PyResult<Py<PyAny>> {
-    let dict = PyDict::new(py);
-    dict.set_item(
-        "slow_consumer_warning_active",
-        snapshot.admin.slow_consumer_warning_active,
-    )?;
-    dict.set_item(
-        "slow_consumer_warning_count",
-        snapshot.admin.slow_consumer_warning_count,
-    )?;
-    dict.set_item(
-        "slow_consumer_cleared_count",
-        snapshot.admin.slow_consumer_cleared_count,
-    )?;
-    dict.set_item("data_loss_count", snapshot.admin.data_loss_count)?;
-    dict.set_item("last_warning_us", snapshot.admin.last_warning_us)?;
-    dict.set_item("last_cleared_us", snapshot.admin.last_cleared_us)?;
-    dict.set_item("last_data_loss_us", snapshot.admin.last_data_loss_us)?;
-    Ok(dict.into())
+    py_dict!(
+        py,
+        "slow_consumer_warning_active" => snapshot.admin.slow_consumer_warning_active,
+        "slow_consumer_warning_count" => snapshot.admin.slow_consumer_warning_count,
+        "slow_consumer_cleared_count" => snapshot.admin.slow_consumer_cleared_count,
+        "data_loss_count" => snapshot.admin.data_loss_count,
+        "last_warning_us" => snapshot.admin.last_warning_us,
+        "last_cleared_us" => snapshot.admin.last_cleared_us,
+        "last_data_loss_us" => snapshot.admin.last_data_loss_us,
+    )
 }
 
 pub(crate) fn service_status_tuples(snapshot: SubscriptionSnapshot) -> Vec<(String, bool, i64)> {
@@ -756,5 +743,117 @@ impl PySubscription {
 
     fn __repr__(&self, py: Python<'_>) -> String {
         subscription_repr(&self.snapshot(py))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::PyDict;
+    use xbbg_async::engine::{SessionLifecycleState, SubscriptionRecoveryPolicy};
+
+    #[test]
+    fn subscription_status_dicts_preserve_expected_fields() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut snapshot = SubscriptionSnapshot::default();
+            snapshot.messages_received = 12;
+            snapshot.dropped_batches = 3;
+            snapshot.batches_sent = 7;
+            snapshot.slow_consumer = true;
+            snapshot.data_loss_events = 2;
+            snapshot.last_message_us = 123;
+            snapshot.last_data_loss_us = 456;
+            snapshot.effective_overflow_policy = "block".to_string();
+
+            snapshot.session = SessionStatusInfo {
+                state: SessionLifecycleState::Up,
+                last_change_us: 42,
+                disconnect_count: 1,
+                reconnect_count: 2,
+                recovery_policy: SubscriptionRecoveryPolicy::Resubscribe,
+                recovery_attempt_count: 3,
+                recovery_success_count: 4,
+                last_recovery_attempt_us: Some(5),
+                last_recovery_success_us: Some(6),
+                last_recovery_error: Some("boom".to_string()),
+            };
+
+            snapshot.admin = AdminStatusInfo {
+                slow_consumer_warning_active: true,
+                slow_consumer_warning_count: 8,
+                slow_consumer_cleared_count: 9,
+                data_loss_count: 10,
+                last_warning_us: Some(11),
+                last_cleared_us: Some(12),
+                last_data_loss_us: Some(13),
+            };
+
+            let stats = stats_to_py(py, snapshot.clone()).expect("stats dict");
+            let stats = stats.bind(py).cast::<PyDict>().expect("stats dict cast");
+            assert_eq!(
+                stats
+                    .get_item("messages_received")
+                    .expect("messages_received")
+                    .expect("messages_received value")
+                    .extract::<u64>()
+                    .expect("messages_received extract"),
+                12
+            );
+            assert_eq!(
+                stats
+                    .get_item("effective_overflow_policy")
+                    .expect("effective_overflow_policy")
+                    .expect("effective_overflow_policy value")
+                    .extract::<String>()
+                    .expect("effective_overflow_policy extract"),
+                "block"
+            );
+
+            let session = session_status_to_py(py, snapshot.clone()).expect("session dict");
+            let session = session
+                .bind(py)
+                .cast::<PyDict>()
+                .expect("session dict cast");
+            assert_eq!(
+                session
+                    .get_item("state")
+                    .expect("state")
+                    .expect("state value")
+                    .extract::<String>()
+                    .expect("state extract"),
+                "up"
+            );
+            assert_eq!(
+                session
+                    .get_item("last_recovery_error")
+                    .expect("last_recovery_error")
+                    .expect("last_recovery_error value")
+                    .extract::<String>()
+                    .expect("last_recovery_error extract"),
+                "boom"
+            );
+
+            let admin = admin_status_to_py(py, snapshot).expect("admin dict");
+            let admin = admin.bind(py).cast::<PyDict>().expect("admin dict cast");
+            assert_eq!(
+                admin
+                    .get_item("slow_consumer_warning_count")
+                    .expect("slow_consumer_warning_count")
+                    .expect("slow_consumer_warning_count value")
+                    .extract::<u64>()
+                    .expect("slow_consumer_warning_count extract"),
+                8
+            );
+            assert_eq!(
+                admin
+                    .get_item("last_data_loss_us")
+                    .expect("last_data_loss_us")
+                    .expect("last_data_loss_us value")
+                    .extract::<Option<i64>>()
+                    .expect("last_data_loss_us extract"),
+                Some(13)
+            );
+        });
     }
 }

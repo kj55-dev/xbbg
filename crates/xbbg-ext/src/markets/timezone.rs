@@ -30,20 +30,14 @@ pub fn session_times_to_utc(
     exchange_tz: &str,
     date: NaiveDate,
 ) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
-    if exchange_tz.eq_ignore_ascii_case("UTC") {
-        let start_local = parse_hhmm(start_time)?;
-        let end_local = parse_hhmm(end_time)?;
-        let start_naive = NaiveDateTime::new(date, start_local);
-        let end_naive = NaiveDateTime::new(date, end_local);
-        return Ok((
-            Utc.from_utc_datetime(&start_naive),
-            Utc.from_utc_datetime(&end_naive),
-        ));
-    }
+    let tz = if exchange_tz.eq_ignore_ascii_case("UTC") {
+        None
+    } else {
+        Some(parse_tz(exchange_tz)?)
+    };
 
-    let tz = parse_tz(exchange_tz)?;
-    let start_dt = to_utc(date, parse_hhmm(start_time)?, tz)?;
-    let end_dt = to_utc(date, parse_hhmm(end_time)?, tz)?;
+    let start_dt = session_time_to_utc(date, start_time, tz)?;
+    let end_dt = session_time_to_utc(date, end_time, tz)?;
     Ok((start_dt, end_dt))
 }
 
@@ -72,12 +66,10 @@ pub fn market_timing(
 
     let local_time = parse_hhmm(session_time)?;
 
+    let local_session = format!("{} {}", date.format("%Y-%m-%d"), session_time);
+
     match target_tz {
-        None => Ok(format!("{} {}", date.format("%Y-%m-%d"), session_time)),
-        Some(tz_name) if tz_name.eq_ignore_ascii_case("local") => {
-            Ok(format!("{} {}", date.format("%Y-%m-%d"), session_time))
-        }
-        Some(tz_name) => {
+        Some(tz_name) if !tz_name.eq_ignore_ascii_case("local") => {
             let src_tz = parse_tz(&info.timezone)?;
             let dst_tz = parse_tz(tz_name)?;
             let local_dt = src_tz
@@ -92,6 +84,7 @@ pub fn market_timing(
             let converted = local_dt.with_timezone(&dst_tz);
             Ok(converted.format("%Y-%m-%d %H:%M:%S%:z").to_string())
         }
+        _ => Ok(local_session),
     }
 }
 
@@ -125,6 +118,15 @@ fn parse_hhmm(value: &str) -> Result<NaiveTime> {
     }
 
     Err(ExtError::InvalidInput(format!("invalid time: {value}")))
+}
+
+fn session_time_to_utc(date: NaiveDate, time: &str, tz: Option<Tz>) -> Result<DateTime<Utc>> {
+    let local_time = parse_hhmm(time)?;
+
+    match tz {
+        Some(tz) => to_utc(date, local_time, tz),
+        None => Ok(Utc.from_utc_datetime(&NaiveDateTime::new(date, local_time))),
+    }
 }
 
 fn to_utc(date: NaiveDate, time: NaiveTime, tz: Tz) -> Result<DateTime<Utc>> {

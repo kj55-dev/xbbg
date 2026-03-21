@@ -2,6 +2,10 @@
 
 use crate::error::{ExtError, Result};
 
+fn invalid_ticker(ticker: &str) -> ExtError {
+    ExtError::InvalidTicker(ticker.to_string())
+}
+
 /// Parsed CDX ticker information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CdxInfo {
@@ -39,48 +43,32 @@ pub fn cdx_series_from_ticker(ticker: &str) -> Result<CdxInfo> {
     let parts: Vec<&str> = ticker.split_whitespace().collect();
 
     if parts.len() < 5 {
-        return Err(ExtError::InvalidTicker(ticker.to_string()));
+        return Err(invalid_ticker(ticker));
     }
 
-    // Find the position of GEN or S{n}
-    let mut series_idx = None;
-    let mut series = String::new();
-    let mut is_generic = false;
-    let mut series_num = None;
+    let (series_idx, series, is_generic, series_num) = parts
+        .iter()
+        .enumerate()
+        .find_map(|(i, part)| match *part {
+            "GEN" => Some((i, "GEN".to_string(), true, None)),
+            _ if part.starts_with('S') && part.len() > 1 => part[1..]
+                .parse::<u32>()
+                .ok()
+                .map(|n| (i, part.to_string(), false, Some(n))),
+            _ => None,
+        })
+        .ok_or_else(|| invalid_ticker(ticker))?;
 
-    for (i, part) in parts.iter().enumerate() {
-        if *part == "GEN" {
-            series_idx = Some(i);
-            series = "GEN".to_string();
-            is_generic = true;
-            break;
-        } else if part.starts_with('S') && part.len() > 1 {
-            let num_part = &part[1..];
-            if let Ok(n) = num_part.parse::<u32>() {
-                series_idx = Some(i);
-                series = part.to_string();
-                series_num = Some(n);
-                break;
-            }
-        }
-    }
-
-    let series_idx = series_idx.ok_or_else(|| ExtError::InvalidTicker(ticker.to_string()))?;
-
-    // Index is everything before series
     let index = parts[..series_idx].join(" ");
 
-    // Tenor is right after series
-    let tenor = if series_idx + 1 < parts.len() {
-        parts[series_idx + 1].to_string()
-    } else {
-        return Err(ExtError::InvalidTicker(ticker.to_string()));
-    };
+    let tenor = parts
+        .get(series_idx + 1)
+        .ok_or_else(|| invalid_ticker(ticker))?
+        .to_string();
 
-    // Asset is last part
     let asset = parts
         .last()
-        .ok_or_else(|| ExtError::InvalidTicker(ticker.to_string()))?
+        .ok_or_else(|| invalid_ticker(ticker))?
         .to_string();
 
     Ok(CdxInfo {
@@ -134,18 +122,13 @@ pub fn build_cdx_ticker(info: &CdxInfo) -> String {
 /// assert!(prev_gen.is_none());
 /// ```
 pub fn previous_series_ticker(ticker: &str) -> Result<Option<String>> {
-    let info = cdx_series_from_ticker(ticker)?;
+    let mut info = cdx_series_from_ticker(ticker)?;
 
-    if info.is_generic {
-        return Ok(None);
-    }
-
-    match info.series_num {
-        Some(n) if n > 1 => {
-            let mut new_info = info.clone();
-            new_info.series = format!("S{}", n - 1);
-            new_info.series_num = Some(n - 1);
-            Ok(Some(build_cdx_ticker(&new_info)))
+    match (info.is_generic, info.series_num) {
+        (false, Some(n)) if n > 1 => {
+            info.series = format!("S{}", n - 1);
+            info.series_num = Some(n - 1);
+            Ok(Some(build_cdx_ticker(&info)))
         }
         _ => Ok(None),
     }

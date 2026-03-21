@@ -30,6 +30,14 @@ repos:
         files: ^(py-xbbg/src/|py-xbbg/tests/)
         pass_filenames: false
 
+      - id: ty
+        name: ty
+        entry: uvx ty check --project .
+        language: system
+        types_or: [python]
+        files: ^(py-xbbg/src/|py-xbbg/tests/|pyproject\\.toml|ty\\.toml)
+        pass_filenames: false
+
       - id: cargo-fmt
         name: cargo-fmt
         entry: cargo fmt --all -- --check
@@ -45,5 +53,3 @@ repos:
         types_or: [rust]
         files: ^(crates/|src|tests|benches|examples)/
         pass_filenames: false
-
-

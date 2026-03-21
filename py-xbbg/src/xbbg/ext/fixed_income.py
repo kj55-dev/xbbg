@@ -19,6 +19,8 @@ Async functions (primary implementation):
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import date
 from enum import IntEnum
 import functools
@@ -27,7 +29,7 @@ from typing import TYPE_CHECKING
 from xbbg.ext._utils import _fmt_date, _syncify
 
 if TYPE_CHECKING:
-    from narwhals.typing import IntoDataFrame
+    from xbbg.blp import DataFrameResult
 
 
 class YieldType(IntEnum):
@@ -59,8 +61,17 @@ class YieldType(IntEnum):
     YTAL = 9
 
 
+@dataclass(frozen=True)
+class _FixedIncomeCore:
+    ext_build_corporate_bonds_query: Callable[[str, str | None, Sequence[str], bool], str]
+    ext_default_bqr_datetimes: Callable[[str | None, str | None], tuple[str, str]]
+    ext_build_preferreds_query: Callable[[str, Sequence[str]], str]
+    ext_build_yas_overrides: Callable[..., list[tuple[str, str]]]
+    ext_normalize_tickers: Callable[[Sequence[str]], list[str]]
+
+
 @functools.lru_cache(maxsize=1)
-def _fixed_income_core() -> dict[str, object]:
+def _fixed_income_core() -> _FixedIncomeCore:
     """Load the native fixed-income helpers only when runtime work needs them."""
     from xbbg._core import (
         ext_build_corporate_bonds_query,
@@ -70,18 +81,18 @@ def _fixed_income_core() -> dict[str, object]:
         ext_normalize_tickers,
     )
 
-    return {
-        "ext_build_corporate_bonds_query": ext_build_corporate_bonds_query,
-        "ext_default_bqr_datetimes": ext_default_bqr_datetimes,
-        "ext_build_preferreds_query": ext_build_preferreds_query,
-        "ext_build_yas_overrides": ext_build_yas_overrides,
-        "ext_normalize_tickers": ext_normalize_tickers,
-    }
+    return _FixedIncomeCore(
+        ext_build_corporate_bonds_query=ext_build_corporate_bonds_query,
+        ext_default_bqr_datetimes=ext_default_bqr_datetimes,
+        ext_build_preferreds_query=ext_build_preferreds_query,
+        ext_build_yas_overrides=ext_build_yas_overrides,
+        ext_normalize_tickers=ext_normalize_tickers,
+    )
 
 
 def _normalize_tickers(tickers: str | list[str]) -> list[str]:
     """Normalize tickers to a list using Rust."""
-    ext_normalize_tickers = _fixed_income_core()["ext_normalize_tickers"]
+    ext_normalize_tickers = _fixed_income_core().ext_normalize_tickers
     # ext_normalize_tickers expects a list, so wrap single string
     if isinstance(tickers, str):
         return ext_normalize_tickers([tickers])
@@ -104,7 +115,7 @@ async def ayas(
     price: float | None = None,
     benchmark: str | None = None,
     **kwargs,
-) -> IntoDataFrame:
+) -> DataFrameResult:
     """Async yield and spread analysis for fixed income securities.
 
     Convenience wrapper around abdp() for Bloomberg's YAS (Yield & Spread Analysis).
@@ -168,7 +179,7 @@ async def ayas(
 
         asyncio.run(main())
     """
-    from xbbg import abdp
+    from xbbg.blp import abdp
 
     tickers_list = _normalize_tickers(tickers)
 
@@ -182,15 +193,8 @@ async def ayas(
     formatted_dt = _fmt_date(settle_dt) if settle_dt is not None else None
     yt_flag = int(yield_type) if yield_type is not None else None
 
-    ext_build_yas_overrides = _fixed_income_core()["ext_build_yas_overrides"]
-    yas_pairs = ext_build_yas_overrides(
-        settle_dt=formatted_dt,
-        yield_type=yt_flag,
-        spread=spread,
-        yield_val=yield_,
-        price=price,
-        benchmark=benchmark,
-    )
+    ext_build_yas_overrides = _fixed_income_core().ext_build_yas_overrides
+    yas_pairs = ext_build_yas_overrides(formatted_dt, yt_flag, spread, yield_, price, benchmark)
     overrides: dict[str, str] = dict(yas_pairs)
 
     # Merge with any additional overrides from kwargs
@@ -211,7 +215,7 @@ async def apreferreds(
     *,
     fields: list[str] | None = None,
     **kwargs,
-) -> IntoDataFrame:
+) -> DataFrameResult:
     """Async find preferred stocks for a company using BQL.
 
     Uses Bloomberg's debt filter to find preferred stock issues
@@ -244,11 +248,11 @@ async def apreferreds(
 
         asyncio.run(main())
     """
-    from xbbg import abql
+    from xbbg.blp import abql
 
     # Build BQL query using Rust (handles ticker normalization, field dedup)
     extra = list(fields) if fields else []
-    ext_build_preferreds_query = _fixed_income_core()["ext_build_preferreds_query"]
+    ext_build_preferreds_query = _fixed_income_core().ext_build_preferreds_query
     bql_query = ext_build_preferreds_query(equity_ticker, extra)
 
     return await abql(bql_query, **kwargs)
@@ -261,7 +265,7 @@ async def acorporate_bonds(
     fields: list[str] | None = None,
     active_only: bool = True,
     **kwargs,
-) -> IntoDataFrame:
+) -> DataFrameResult:
     """Async find corporate bonds for a company using BQL.
 
     Uses Bloomberg's bondsuniv filter to find active corporate bond issues
@@ -296,11 +300,11 @@ async def acorporate_bonds(
 
         asyncio.run(main())
     """
-    from xbbg import abql
+    from xbbg.blp import abql
 
     # Build BQL query using Rust (handles field dedup, filter construction)
     extra = list(fields) if fields else []
-    ext_build_corporate_bonds_query = _fixed_income_core()["ext_build_corporate_bonds_query"]
+    ext_build_corporate_bonds_query = _fixed_income_core().ext_build_corporate_bonds_query
     bql_query = ext_build_corporate_bonds_query(ticker, ccy, extra, active_only)
 
     return await abql(bql_query, **kwargs)
@@ -314,7 +318,7 @@ async def abqr(
     event_types: list[str] | None = None,
     include_broker_codes: bool = True,
     **kwargs,
-) -> IntoDataFrame:
+) -> DataFrameResult:
     """Async Bloomberg Quote Request (dealer quotes).
 
     Retrieves intraday tick data with broker/dealer codes for a security.
@@ -358,10 +362,10 @@ async def abqr(
 
         asyncio.run(main())
     """
-    from xbbg import abdtick
+    from xbbg.blp import abdtick
 
     # Compute default datetime range using Rust (handles normalization + defaults)
-    ext_default_bqr_datetimes = _fixed_income_core()["ext_default_bqr_datetimes"]
+    ext_default_bqr_datetimes = _fixed_income_core().ext_default_bqr_datetimes
     start_datetime, end_datetime = ext_default_bqr_datetimes(start_datetime, end_datetime)
 
     # Default event types

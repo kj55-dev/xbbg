@@ -53,6 +53,35 @@ impl<'a> Message<'a> {
         }
     }
 
+    #[inline(always)]
+    fn name_from_raw(ptr: *mut ffi::blpapi_Name_t) -> Name {
+        // SAFETY: blpapi_Name_duplicate returns a valid pointer.
+        // We duplicate the Bloomberg-owned name so the returned Name is owned.
+        unsafe { Name::from_raw(NonNull::new(ffi::blpapi_Name_duplicate(ptr)).unwrap()) }
+    }
+
+    #[inline(always)]
+    fn message_name(&self) -> Name {
+        // SAFETY: blpapi_Message_messageType returns a valid Name pointer.
+        // We duplicate it to get an owned Name that we can return.
+        let ptr = unsafe { ffi::blpapi_Message_messageType(self.ptr) };
+        Self::name_from_raw(ptr)
+    }
+
+    #[inline(always)]
+    fn correlation_id_at(&self, index: usize) -> Option<CorrelationId> {
+        if index >= self.num_correlation_ids() {
+            return None;
+        }
+
+        // SAFETY: We've verified index is in bounds, and self.ptr is valid.
+        // blpapi_Message_correlationId returns the CorrelationId by value.
+        unsafe {
+            let cid = ffi::blpapi_Message_correlationId(self.ptr, index);
+            Some(CorrelationId::from_ffi(&cid))
+        }
+    }
+
     /// Get root element of this message.
     ///
     /// The root element contains all field data for this message.
@@ -72,17 +101,13 @@ impl<'a> Message<'a> {
 
     /// Message type name.
     ///
-    /// Returns the schema type of this message (e.g., "ReferenceDataResponse").
-    /// This is an owned Name because it's duplicated from Bloomberg's internal storage.
-    ///
-    /// # Performance
-    /// This allocates a new Name (increments refcount). Cache if called repeatedly.
+    /// Alias for [`Self::name`].
     #[inline(always)]
     pub fn message_type(&self) -> Name {
         self.name()
     }
 
-    /// Message name (alias for `message_type()`).
+    /// Message name.
     ///
     /// Returns the schema type of this message (e.g., "ReferenceDataResponse").
     /// This is an owned Name because it's duplicated from Bloomberg's internal storage.
@@ -91,12 +116,7 @@ impl<'a> Message<'a> {
     /// This allocates a new Name (increments refcount). Cache if called repeatedly.
     #[inline(always)]
     pub fn name(&self) -> Name {
-        // SAFETY: blpapi_Message_messageType returns a valid Name pointer.
-        // We duplicate it to get an owned Name that we can return.
-        // The duplicate increments Bloomberg's internal refcount.
-        let ptr = unsafe { ffi::blpapi_Message_messageType(self.ptr) };
-        // SAFETY: blpapi_Name_duplicate returns a valid pointer
-        unsafe { Name::from_raw(NonNull::new(ffi::blpapi_Name_duplicate(ptr)).unwrap()) }
+        self.message_name()
     }
 
     /// Topic name (for subscription messages).
@@ -193,16 +213,7 @@ impl<'a> Message<'a> {
     /// This is a hot path method - minimal allocation (just the CorrelationId).
     #[inline]
     pub fn correlation_id(&self, index: usize) -> Option<CorrelationId> {
-        if index >= self.num_correlation_ids() {
-            return None;
-        }
-
-        // SAFETY: We've verified index is in bounds, and self.ptr is valid.
-        // blpapi_Message_correlationId returns the CorrelationId by value.
-        unsafe {
-            let cid = ffi::blpapi_Message_correlationId(self.ptr, index);
-            Some(CorrelationId::from_ffi(&cid))
-        }
+        self.correlation_id_at(index)
     }
 }
 

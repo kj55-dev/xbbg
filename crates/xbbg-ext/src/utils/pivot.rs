@@ -10,6 +10,29 @@ use arrow::datatypes::{DataType, Field, Schema};
 
 use crate::error::{ExtError, Result};
 
+fn long_format_columns(schema: &Schema) -> Vec<&str> {
+    schema.fields().iter().map(|f| f.name().as_str()).collect()
+}
+
+fn is_long_format_columns(columns: &[&str]) -> bool {
+    columns.len() == 3
+        && columns.contains(&"ticker")
+        && columns.contains(&"field")
+        && columns.contains(&"value")
+}
+
+fn string_array_column<'a>(
+    batch: &'a RecordBatch,
+    index: usize,
+    name: &str,
+) -> Result<&'a StringArray> {
+    batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| ExtError::MissingColumn(format!("{name} must be string")))
+}
+
 /// Pivot a long-format DataFrame to wide format.
 ///
 /// Transforms data from:
@@ -42,14 +65,10 @@ use crate::error::{ExtError, Result};
 /// Returns error if required columns are missing or if the batch is already wide format.
 pub fn pivot_to_wide(batch: &RecordBatch) -> Result<RecordBatch> {
     let schema = batch.schema();
-    let columns: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+    let columns = long_format_columns(&schema);
 
     // Check if already wide format (doesn't have exactly ticker/field/value)
-    if columns.len() != 3
-        || !columns.contains(&"ticker")
-        || !columns.contains(&"field")
-        || !columns.contains(&"value")
-    {
+    if !is_long_format_columns(&columns) {
         // Already wide format or different structure, return as-is
         return Ok(batch.clone());
     }
@@ -69,23 +88,9 @@ pub fn pivot_to_wide(batch: &RecordBatch) -> Result<RecordBatch> {
         .index_of("value")
         .map_err(|_| ExtError::MissingColumn("value".into()))?;
 
-    let ticker_col = batch
-        .column(ticker_idx)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| ExtError::MissingColumn("ticker must be string".into()))?;
-
-    let field_col = batch
-        .column(field_idx)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| ExtError::MissingColumn("field must be string".into()))?;
-
-    let value_col = batch
-        .column(value_idx)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| ExtError::MissingColumn("value must be string".into()))?;
+    let ticker_col = string_array_column(batch, ticker_idx, "ticker")?;
+    let field_col = string_array_column(batch, field_idx, "field")?;
+    let value_col = string_array_column(batch, value_idx, "value")?;
 
     // First pass: collect unique tickers and fields
     let mut unique_tickers: Vec<String> = Vec::new();
@@ -159,12 +164,7 @@ pub fn pivot_to_wide(batch: &RecordBatch) -> Result<RecordBatch> {
 /// Check if a RecordBatch is in long format (ticker, field, value).
 pub fn is_long_format(batch: &RecordBatch) -> bool {
     let schema = batch.schema();
-    let columns: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-
-    columns.len() == 3
-        && columns.contains(&"ticker")
-        && columns.contains(&"field")
-        && columns.contains(&"value")
+    is_long_format_columns(&long_format_columns(&schema))
 }
 
 #[cfg(test)]

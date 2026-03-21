@@ -7,13 +7,13 @@
 .\scripts\sdktool.ps1
 
 # Add a specific version
-.\scripts\sdktool.ps1 -Version 3.25.12.1
+.\scripts\sdktool.ps1 -Version <version>
 
 # List installed versions
 .\scripts\sdktool.ps1 -List
 
 # Remove a version
-.\scripts\sdktool.ps1 -Remove 3.25.12.1
+.\scripts\sdktool.ps1 -Remove <version>
 
 # Re-download and re-extract
 .\scripts\sdktool.ps1 -Force
@@ -29,16 +29,17 @@ vendor/
 └── blpapi-sdk/
     ├── README.md            # This file (tracked in git)
     ├── .cache/              # Downloaded zips (reusable)
-    ├── 3.25.12.1/           # Extracted SDK
+    ├── 3.26.1.1/            # Extracted SDK (example)
     │   ├── include/         # C/C++ headers (blpapi_*.h)
-    │   ├── lib/             # Import libraries (.lib / .dll)
-    │   ├── bin/             # Example executables + runtime DLLs
+    │   ├── lib/             # Libraries (or symlink to Darwin/ on macOS)
+    │   ├── Darwin/          # macOS runtime libraries + examples
     │   └── ...
     └── 3.24.0.1/            # Another version (optional)
 ```
 
 The script writes `XBBG_DEV_SDK_ROOT=vendor/blpapi-sdk/<version>` to `.env` at the repo root.
-The build system (`crates/blpapi-sys/build.rs`) reads this env var to locate `include/` and `lib/`.
+For local builds, `.cargo/config.toml` points at `vendor/blpapi-sdk`, and the build
+system automatically selects the newest versioned child directory.
 
 ## Notes
 

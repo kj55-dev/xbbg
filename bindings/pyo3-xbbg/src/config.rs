@@ -158,111 +158,85 @@ impl PyEngineConfig {
         };
 
         if let Some(kw) = kwargs {
-            if let Some(v) = kw.get_item("host")? {
-                config.host = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("port")? {
-                config.port = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("servers")? {
-                config.servers = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("zfp_remote")? {
-                config.zfp_remote = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("request_pool_size")? {
-                config.request_pool_size = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("subscription_pool_size")? {
-                config.subscription_pool_size = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("validation_mode")? {
-                config.validation_mode = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("subscription_flush_threshold")? {
-                config.subscription_flush_threshold = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("max_event_queue_size")? {
-                config.max_event_queue_size = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("command_queue_size")? {
-                config.command_queue_size = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("subscription_stream_capacity")? {
-                config.subscription_stream_capacity = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("overflow_policy")? {
-                config.overflow_policy = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("warmup_services")? {
-                config.warmup_services = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("field_cache_path")? {
-                config.field_cache_path = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("auth_method")? {
-                config.auth_method = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("app_name")? {
-                config.app_name = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("dir_property")? {
-                config.dir_property = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("user_id")? {
-                config.user_id = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("ip_address")? {
-                config.ip_address = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("token")? {
-                config.token = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("tls_client_credentials")? {
-                config.tls_client_credentials = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("tls_client_credentials_password")? {
-                config.tls_client_credentials_password = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("tls_trust_material")? {
-                config.tls_trust_material = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("tls_handshake_timeout_ms")? {
-                config.tls_handshake_timeout_ms = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("tls_crl_fetch_timeout_ms")? {
-                config.tls_crl_fetch_timeout_ms = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("num_start_attempts")? {
-                config.num_start_attempts = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("auto_restart_on_disconnection")? {
-                config.auto_restart_on_disconnection = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("max_recovery_attempts")? {
-                config.max_recovery_attempts = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("recovery_timeout_ms")? {
-                config.recovery_timeout_ms = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("retry_max_retries")? {
-                config.retry_max_retries = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("retry_initial_delay_ms")? {
-                config.retry_initial_delay_ms = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("retry_backoff_factor")? {
-                config.retry_backoff_factor = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("retry_max_delay_ms")? {
-                config.retry_max_delay_ms = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("health_check_interval_ms")? {
-                config.health_check_interval_ms = v.extract()?;
-            }
-            if let Some(v) = kw.get_item("sdk_log_level")? {
-                config.sdk_log_level = v.extract()?;
-            }
+            apply_kw(kw, "host", &mut config.host)?;
+            apply_kw(kw, "port", &mut config.port)?;
+            apply_kw(kw, "servers", &mut config.servers)?;
+            apply_kw(kw, "zfp_remote", &mut config.zfp_remote)?;
+            apply_kw(kw, "request_pool_size", &mut config.request_pool_size)?;
+            apply_kw(
+                kw,
+                "subscription_pool_size",
+                &mut config.subscription_pool_size,
+            )?;
+            apply_kw(kw, "validation_mode", &mut config.validation_mode)?;
+            apply_kw(
+                kw,
+                "subscription_flush_threshold",
+                &mut config.subscription_flush_threshold,
+            )?;
+            apply_kw(kw, "max_event_queue_size", &mut config.max_event_queue_size)?;
+            apply_kw(kw, "command_queue_size", &mut config.command_queue_size)?;
+            apply_kw(
+                kw,
+                "subscription_stream_capacity",
+                &mut config.subscription_stream_capacity,
+            )?;
+            apply_kw(kw, "overflow_policy", &mut config.overflow_policy)?;
+            apply_kw(kw, "warmup_services", &mut config.warmup_services)?;
+            apply_kw(kw, "field_cache_path", &mut config.field_cache_path)?;
+            apply_kw(kw, "auth_method", &mut config.auth_method)?;
+            apply_kw(kw, "app_name", &mut config.app_name)?;
+            apply_kw(kw, "dir_property", &mut config.dir_property)?;
+            apply_kw(kw, "user_id", &mut config.user_id)?;
+            apply_kw(kw, "ip_address", &mut config.ip_address)?;
+            apply_kw(kw, "token", &mut config.token)?;
+            apply_kw(
+                kw,
+                "tls_client_credentials",
+                &mut config.tls_client_credentials,
+            )?;
+            apply_kw(
+                kw,
+                "tls_client_credentials_password",
+                &mut config.tls_client_credentials_password,
+            )?;
+            apply_kw(kw, "tls_trust_material", &mut config.tls_trust_material)?;
+            apply_kw(
+                kw,
+                "tls_handshake_timeout_ms",
+                &mut config.tls_handshake_timeout_ms,
+            )?;
+            apply_kw(
+                kw,
+                "tls_crl_fetch_timeout_ms",
+                &mut config.tls_crl_fetch_timeout_ms,
+            )?;
+            apply_kw(kw, "num_start_attempts", &mut config.num_start_attempts)?;
+            apply_kw(
+                kw,
+                "auto_restart_on_disconnection",
+                &mut config.auto_restart_on_disconnection,
+            )?;
+            apply_kw(
+                kw,
+                "max_recovery_attempts",
+                &mut config.max_recovery_attempts,
+            )?;
+            apply_kw(kw, "recovery_timeout_ms", &mut config.recovery_timeout_ms)?;
+            apply_kw(kw, "retry_max_retries", &mut config.retry_max_retries)?;
+            apply_kw(
+                kw,
+                "retry_initial_delay_ms",
+                &mut config.retry_initial_delay_ms,
+            )?;
+            apply_kw(kw, "retry_backoff_factor", &mut config.retry_backoff_factor)?;
+            apply_kw(kw, "retry_max_delay_ms", &mut config.retry_max_delay_ms)?;
+            apply_kw(
+                kw,
+                "health_check_interval_ms",
+                &mut config.health_check_interval_ms,
+            )?;
+            apply_kw(kw, "sdk_log_level", &mut config.sdk_log_level)?;
         }
 
         Ok(config)
@@ -287,6 +261,15 @@ impl PyEngineConfig {
     }
 }
 
+fn apply_kw<'py, T>(kw: &Bound<'py, PyDict>, key: &str, target: &mut T) -> PyResult<()>
+where
+    T: FromPyObject<'py>,
+{
+    if let Some(value) = kw.get_item(key)? {
+        *target = value.extract()?;
+    }
+    Ok(())
+}
 fn require_auth_value(value: &Option<String>, field: &str, method: &str) -> PyResult<String> {
     value
         .clone()

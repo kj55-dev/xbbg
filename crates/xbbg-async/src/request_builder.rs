@@ -53,25 +53,11 @@ impl RequestBuilder {
         }
 
         // HashMap iteration order is not stable. Sort keys for deterministic routing.
-        let mut keys: Vec<String> = kwargs.keys().cloned().collect();
-        keys.sort();
+        let mut routed_kwargs: Vec<(String, String)> = kwargs.into_iter().collect();
+        routed_kwargs.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
 
-        for key in keys {
-            let Some(value) = kwargs.remove(&key) else {
-                continue;
-            };
-
-            if valid_elements.contains(&key) {
-                routed.elements.push((key, value));
-            } else if is_field_override_name(&key) {
-                routed.overrides.push((key, value));
-            } else if !valid_elements.is_empty() {
-                let warning = format_unknown_parameter_warning(&key, operation, &valid_elements);
-                routed.warnings.push(warning);
-                routed.elements.push((key, value));
-            } else {
-                routed.elements.push((key, value));
-            }
+        for (key, value) in routed_kwargs {
+            route_kwarg(&mut routed, &valid_elements, operation, key, value);
         }
 
         routed
@@ -95,21 +81,21 @@ fn valid_elements_from_cache(
 }
 
 fn parse_raw_overrides(raw: &str) -> Vec<(String, String)> {
-    if let Ok(map) = serde_json::from_str::<serde_json::Map<String, Value>>(raw) {
-        return map
+    parse_raw_override_entries::<serde_json::Map<String, Value>>(raw)
+        .or_else(|| parse_raw_override_entries::<Vec<(String, Value)>>(raw))
+        .unwrap_or_default()
+}
+
+fn parse_raw_override_entries<T>(raw: &str) -> Option<Vec<(String, String)>>
+where
+    T: serde::de::DeserializeOwned + IntoIterator<Item = (String, Value)>,
+{
+    serde_json::from_str::<T>(raw).ok().map(|entries| {
+        entries
             .into_iter()
             .map(|(k, v)| (k, json_value_to_string(v)))
-            .collect();
-    }
-
-    if let Ok(list) = serde_json::from_str::<Vec<(String, Value)>>(raw) {
-        return list
-            .into_iter()
-            .map(|(k, v)| (k, json_value_to_string(v)))
-            .collect();
-    }
-
-    Vec::new()
+            .collect()
+    })
 }
 
 fn json_value_to_string(value: Value) -> String {
@@ -139,6 +125,26 @@ fn is_all_uppercase(value: &str) -> bool {
     }
 
     has_uppercase_letter
+}
+
+fn route_kwarg(
+    routed: &mut RoutedParams,
+    valid_elements: &HashSet<String>,
+    operation: &str,
+    key: String,
+    value: String,
+) {
+    if valid_elements.contains(&key) {
+        routed.elements.push((key, value));
+    } else if is_field_override_name(&key) {
+        routed.overrides.push((key, value));
+    } else {
+        if !valid_elements.is_empty() {
+            let warning = format_unknown_parameter_warning(&key, operation, valid_elements);
+            routed.warnings.push(warning);
+        }
+        routed.elements.push((key, value));
+    }
 }
 
 fn format_unknown_parameter_warning(

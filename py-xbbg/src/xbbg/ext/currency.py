@@ -78,7 +78,7 @@ async def aconvert_ccy(
 
         asyncio.run(main())
     """
-    from xbbg import abdh, abdp
+    from xbbg.blp import abdh, abdp
 
     # Convert to narwhals DataFrame
     nw_df: nw.DataFrame = nw.from_native(data)  # type: ignore[assignment]

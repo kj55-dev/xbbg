@@ -18,9 +18,6 @@ import logging
 import sys
 from typing import Any
 
-import narwhals.stable.v1 as nw
-import pyarrow as pa
-
 from xbbg._services_gen import Format
 
 logger = logging.getLogger(__name__)
@@ -546,6 +543,20 @@ def resolve_backend(backend: Backend | str | None) -> Backend | None:
     return Backend(backend) if isinstance(backend, str) else backend
 
 
+def _narwhals():
+    """Import narwhals lazily so pure-Python import boundaries stay lightweight."""
+    import narwhals.stable.v1 as nw
+
+    return nw
+
+
+def _pyarrow():
+    """Import pyarrow lazily so helpers that do not need it remain importable."""
+    import pyarrow as pa
+
+    return pa
+
+
 def convert_backend(nw_df: Any, backend: Backend | str | None):
     """Convert a narwhals/native frame to the requested backend."""
     effective = resolve_backend(backend)
@@ -553,7 +564,7 @@ def convert_backend(nw_df: Any, backend: Backend | str | None):
     if hasattr(nw_df, "_mgr"):
         if effective == Backend.PANDAS:
             return nw_df
-        nw_df = nw.from_native(nw_df)
+        nw_df = _narwhals().from_native(nw_df)
 
     if effective == Backend.PANDAS:
         return nw_df.to_pandas()
@@ -563,7 +574,7 @@ def convert_backend(nw_df: Any, backend: Backend | str | None):
         native = nw_df.to_native()
         if isinstance(native, pl.DataFrame):
             return native
-        if isinstance(native, pa.Table):
+        if isinstance(native, _pyarrow().Table):
             return pl.from_arrow(native)
         return pl.from_pandas(nw_df.to_pandas())
     if effective == Backend.POLARS_LAZY:
@@ -572,11 +583,12 @@ def convert_backend(nw_df: Any, backend: Backend | str | None):
         native = nw_df.to_native()
         if isinstance(native, pl.DataFrame):
             return native.lazy()
-        if isinstance(native, pa.Table):
+        if isinstance(native, _pyarrow().Table):
             return pl.from_arrow(native).lazy()
         return pl.from_pandas(nw_df.to_pandas()).lazy()
     if effective == Backend.PYARROW:
         native = nw_df.to_native()
+        pa = _pyarrow()
         if isinstance(native, pa.Table):
             return native
         if hasattr(native, "to_arrow"):

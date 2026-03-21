@@ -6,6 +6,63 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+macro_rules! impl_custom_string_enum {
+    (
+        $name:ident,
+        custom = $custom:ident,
+        $( $variant:ident => $value:expr ),+ $(,)?
+    ) => {
+        impl $name {
+            /// Returns the string form for known and custom values.
+            pub fn as_str(&self) -> &str {
+                match self {
+                    $(Self::$variant => $value,)+
+                    Self::$custom(s) => s.as_str(),
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = Infallible;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(match s {
+                    $( $value => Self::$variant, )+
+                    other => Self::$custom(other.to_string()),
+                })
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let s = String::deserialize(deserializer)?;
+                Ok(match Self::from_str(&s) {
+                    Ok(value) => value,
+                    Err(never) => match never {},
+                })
+            }
+        }
+    };
+}
+
 /// Bloomberg service URIs.
 ///
 /// Standard Bloomberg API services with URIs from the Bloomberg C++ SDK.
@@ -38,74 +95,20 @@ pub enum Service {
     Custom(String),
 }
 
-impl Service {
-    /// Returns the Bloomberg service URI string.
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::ApiFlds => "//blp/apiflds",
-            Self::BqlSvc => "//blp/bqlsvc",
-            Self::ExrSvc => "//blp/exrsvc",
-            Self::Instruments => "//blp/instruments",
-            Self::MktBar => "//blp/mktbar",
-            Self::MktData => "//blp/mktdata",
-            Self::MktDepth => "//blp/mktdepthdata",
-            Self::MktList => "//blp/mktlist",
-            Self::MktVwap => "//blp/mktvwap",
-            Self::RefData => "//blp/refdata",
-            Self::TaSvc => "//blp/tasvc",
-            Self::Custom(s) => s.as_str(),
-        }
-    }
-}
-
-impl fmt::Display for Service {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl FromStr for Service {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let svc = match s {
-            "//blp/apiflds" => Self::ApiFlds,
-            "//blp/bqlsvc" => Self::BqlSvc,
-            "//blp/exrsvc" => Self::ExrSvc,
-            "//blp/instruments" => Self::Instruments,
-            "//blp/mktbar" => Self::MktBar,
-            "//blp/mktdata" => Self::MktData,
-            "//blp/mktdepthdata" => Self::MktDepth,
-            "//blp/mktlist" => Self::MktList,
-            "//blp/mktvwap" => Self::MktVwap,
-            "//blp/refdata" => Self::RefData,
-            "//blp/tasvc" => Self::TaSvc,
-            other => Self::Custom(other.to_string()),
-        };
-        Ok(svc)
-    }
-}
-
-impl Serialize for Service {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Service {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(match Self::from_str(&s) {
-            Ok(service) => service,
-            Err(never) => match never {},
-        })
-    }
+impl_custom_string_enum! {
+    Service,
+    custom = Custom,
+    ApiFlds => "//blp/apiflds",
+    BqlSvc => "//blp/bqlsvc",
+    ExrSvc => "//blp/exrsvc",
+    Instruments => "//blp/instruments",
+    MktBar => "//blp/mktbar",
+    MktData => "//blp/mktdata",
+    MktDepth => "//blp/mktdepthdata",
+    MktList => "//blp/mktlist",
+    MktVwap => "//blp/mktvwap",
+    RefData => "//blp/refdata",
+    TaSvc => "//blp/tasvc",
 }
 
 /// Bloomberg request operation names.
@@ -149,28 +152,6 @@ pub enum Operation {
 }
 
 impl Operation {
-    /// Returns the Bloomberg operation name string.
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Beqs => "BeqsRequest",
-            Self::BqlSendQuery => "sendQuery",
-            Self::CurveList => "curveListRequest",
-            Self::ExcelGetGrid => "ExcelGetGridRequest",
-            Self::FieldInfo => "FieldInfoRequest",
-            Self::FieldSearch => "FieldSearchRequest",
-            Self::GovtList => "govtListRequest",
-            Self::HistoricalData => "HistoricalDataRequest",
-            Self::InstrumentList => "instrumentListRequest",
-            Self::IntradayBar => "IntradayBarRequest",
-            Self::IntradayTick => "IntradayTickRequest",
-            Self::PortfolioData => "PortfolioDataRequest",
-            Self::RawRequest => "",
-            Self::ReferenceData => "ReferenceDataRequest",
-            Self::StudyRequest => "studyRequest",
-            Self::Custom(s) => s.as_str(),
-        }
-    }
-
     /// Returns the default extractor for this operation.
     pub fn default_extractor(&self) -> ExtractorType {
         match self {
@@ -216,58 +197,24 @@ impl Operation {
     }
 }
 
-impl fmt::Display for Operation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
-impl FromStr for Operation {
-    type Err = Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let op = match s {
-            "BeqsRequest" => Self::Beqs,
-            "sendQuery" => Self::BqlSendQuery,
-            "curveListRequest" => Self::CurveList,
-            "ExcelGetGridRequest" => Self::ExcelGetGrid,
-            "FieldInfoRequest" => Self::FieldInfo,
-            "FieldSearchRequest" => Self::FieldSearch,
-            "govtListRequest" => Self::GovtList,
-            "HistoricalDataRequest" => Self::HistoricalData,
-            "instrumentListRequest" => Self::InstrumentList,
-            "IntradayBarRequest" => Self::IntradayBar,
-            "IntradayTickRequest" => Self::IntradayTick,
-            "PortfolioDataRequest" => Self::PortfolioData,
-            "" => Self::RawRequest,
-            "ReferenceDataRequest" => Self::ReferenceData,
-            "studyRequest" => Self::StudyRequest,
-            other => Self::Custom(other.to_string()),
-        };
-        Ok(op)
-    }
-}
-
-impl Serialize for Operation {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Operation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(match Self::from_str(&s) {
-            Ok(operation) => operation,
-            Err(never) => match never {},
-        })
-    }
+impl_custom_string_enum! {
+    Operation,
+    custom = Custom,
+    Beqs => "BeqsRequest",
+    BqlSendQuery => "sendQuery",
+    CurveList => "curveListRequest",
+    ExcelGetGrid => "ExcelGetGridRequest",
+    FieldInfo => "FieldInfoRequest",
+    FieldSearch => "FieldSearchRequest",
+    GovtList => "govtListRequest",
+    HistoricalData => "HistoricalDataRequest",
+    InstrumentList => "instrumentListRequest",
+    IntradayBar => "IntradayBarRequest",
+    IntradayTick => "IntradayTickRequest",
+    PortfolioData => "PortfolioDataRequest",
+    RawRequest => "",
+    ReferenceData => "ReferenceDataRequest",
+    StudyRequest => "studyRequest",
 }
 
 /// Extractor type hint for Arrow conversion.

@@ -55,7 +55,7 @@ impl YieldType {
             "EURO YIELD TO WORST" => Ok(Self::EYTW),
             "EURO YIELD TO WORST REFUNDING" => Ok(Self::EYTWR),
             "YIELD TO AVERAGE LIFE" => Ok(Self::YTAL),
-            _ => Err(ExtError::UnknownYieldType(s.to_string())),
+            _ => Err(unknown_yield_type(s)),
         }
     }
 
@@ -118,9 +118,13 @@ impl TryFrom<u8> for YieldType {
             7 => Ok(Self::EYTW),
             8 => Ok(Self::EYTWR),
             9 => Ok(Self::YTAL),
-            _ => Err(ExtError::UnknownYieldType(value.to_string())),
+            _ => Err(unknown_yield_type(value)),
         }
     }
+}
+
+fn unknown_yield_type(value: impl ToString) -> ExtError {
+    ExtError::UnknownYieldType(value.to_string())
 }
 
 /// Build Bloomberg YAS (Yield & Spread Analysis) override tuples.
@@ -135,28 +139,18 @@ pub fn build_yas_overrides(
     price: Option<f64>,
     benchmark: Option<&str>,
 ) -> Vec<(String, String)> {
-    let mut overrides = Vec::new();
-
-    if let Some(dt) = settle_dt {
-        overrides.push(("YAS_SETTLE_DT".to_string(), dt.to_string()));
-    }
-    if let Some(yt) = yield_type {
-        overrides.push(("YAS_YLD_FLAG".to_string(), yt.as_flag_value().to_string()));
-    }
-    if let Some(s) = spread {
-        overrides.push(("YAS_YLD_SPREAD".to_string(), s.to_string()));
-    }
-    if let Some(y) = yield_val {
-        overrides.push(("YAS_BOND_YLD".to_string(), y.to_string()));
-    }
-    if let Some(p) = price {
-        overrides.push(("YAS_BOND_PX".to_string(), p.to_string()));
-    }
-    if let Some(b) = benchmark {
-        overrides.push(("YAS_BNCHMRK_BOND".to_string(), b.to_string()));
-    }
-
-    overrides
+    [
+        settle_dt.map(|dt| ("YAS_SETTLE_DT", dt.to_string())),
+        yield_type.map(|yt| ("YAS_YLD_FLAG", yt.as_flag_value().to_string())),
+        spread.map(|s| ("YAS_YLD_SPREAD", s.to_string())),
+        yield_val.map(|y| ("YAS_BOND_YLD", y.to_string())),
+        price.map(|p| ("YAS_BOND_PX", p.to_string())),
+        benchmark.map(|b| ("YAS_BNCHMRK_BOND", b.to_string())),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect()
 }
 
 #[cfg(test)]

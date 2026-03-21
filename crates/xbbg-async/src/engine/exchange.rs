@@ -33,52 +33,19 @@ const MARKET_FIELDS: [&str; 4] = [
 impl Engine {
     /// Query Bloomberg exchange metadata and derive sessions.
     pub async fn fetch_exchange_info(&self, ticker: &str) -> Result<ExchangeInfo, BlpAsyncError> {
-        let trimmed = ticker.trim();
-        if trimmed.is_empty() {
-            return Err(BlpAsyncError::ConfigError {
-                detail: "ticker is required".to_string(),
-            });
-        }
-
-        let params = RequestParams {
-            service: Service::RefData.to_string(),
-            operation: Operation::ReferenceData.to_string(),
-            extractor: ExtractorType::RefData,
-            extractor_set: true,
-            securities: Some(vec![trimmed.to_string()]),
-            fields: Some(EXCHANGE_FIELDS.iter().map(|s| s.to_string()).collect()),
-            format: Some("wide".to_string()),
-            ..Default::default()
-        };
-
-        let batch = self.request(params).await?;
-        Ok(parse_exchange_info(trimmed, &batch))
+        let ticker = normalize_ticker(ticker)?;
+        let batch = self
+            .request_reference_data(ticker, &EXCHANGE_FIELDS)
+            .await?;
+        Ok(parse_exchange_info(ticker, &batch))
     }
 
     /// Query lightweight market metadata used by higher-level APIs.
     pub async fn fetch_market_info(&self, ticker: &str) -> Result<MarketInfo, BlpAsyncError> {
-        let trimmed = ticker.trim();
-        if trimmed.is_empty() {
-            return Err(BlpAsyncError::ConfigError {
-                detail: "ticker is required".to_string(),
-            });
-        }
+        let ticker = normalize_ticker(ticker)?;
+        let batch = self.request_reference_data(ticker, &MARKET_FIELDS).await?;
 
-        let params = RequestParams {
-            service: Service::RefData.to_string(),
-            operation: Operation::ReferenceData.to_string(),
-            extractor: ExtractorType::RefData,
-            extractor_set: true,
-            securities: Some(vec![trimmed.to_string()]),
-            fields: Some(MARKET_FIELDS.iter().map(|s| s.to_string()).collect()),
-            format: Some("wide".to_string()),
-            ..Default::default()
-        };
-
-        let batch = self.request(params).await?;
-
-        let exch =
-            get_string(&batch, "EXCH_CODE").or_else(|| get_string(&batch, "ID_MIC_PRIM_EXCH"));
+        let exch = get_string_from(&batch, &["EXCH_CODE", "ID_MIC_PRIM_EXCH"]);
         let tz = get_string(&batch, "IANA_TIME_ZONE");
         let freq = get_string(&batch, "FUT_GEN_MONTH");
         let is_fut = freq.as_ref().is_some_and(|s| !s.trim().is_empty());
@@ -99,20 +66,16 @@ impl Engine {
             return ExchangeInfo::fallback("");
         }
 
-        match overrides::get_exchange_override(trimmed) {
-            Ok(Some(info)) => return info,
-            Ok(None) => {}
-            Err(e) => {
-                xbbg_log::warn!(ticker = trimmed, error = %e, "resolve_exchange override lookup failed")
-            }
+        if let Some(info) =
+            self.lookup_exchange_info(trimmed, "override", overrides::get_exchange_override)
+        {
+            return info;
         }
 
-        match self.exchange_cache.get(trimmed) {
-            Ok(Some(info)) => return info,
-            Ok(None) => {}
-            Err(e) => {
-                xbbg_log::warn!(ticker = trimmed, error = %e, "resolve_exchange cache lookup failed")
-            }
+        if let Some(info) =
+            self.lookup_exchange_info(trimmed, "cache", |ticker| self.exchange_cache.get(ticker))
+        {
+            return info;
         }
 
         match self.fetch_exchange_info(trimmed).await {
@@ -152,6 +115,61 @@ impl Engine {
             detail: e.to_string(),
         })
     }
+
+    async fn request_reference_data(
+        &self,
+        ticker: &str,
+        fields: &[&str],
+    ) -> Result<arrow::record_batch::RecordBatch, BlpAsyncError> {
+        self.request(reference_data_params(ticker, fields)).await
+    }
+
+    fn lookup_exchange_info<F, E>(
+        &self,
+        ticker: &str,
+        stage: &str,
+        lookup: F,
+    ) -> Option<ExchangeInfo>
+    where
+        F: FnOnce(&str) -> Result<Option<ExchangeInfo>, E>,
+        E: std::fmt::Display,
+    {
+        match lookup(ticker) {
+            Ok(Some(info)) => Some(info),
+            Ok(None) => None,
+            Err(e) => {
+                xbbg_log::warn!(
+                    ticker = ticker,
+                    error = %e,
+                    "resolve_exchange {stage} lookup failed"
+                );
+                None
+            }
+        }
+    }
+}
+
+fn reference_data_params(ticker: &str, fields: &[&str]) -> RequestParams {
+    RequestParams {
+        service: Service::RefData.to_string(),
+        operation: Operation::ReferenceData.to_string(),
+        extractor: ExtractorType::RefData,
+        extractor_set: true,
+        securities: Some(vec![ticker.to_string()]),
+        fields: Some(fields.iter().map(|s| s.to_string()).collect()),
+        format: Some("wide".to_string()),
+        ..Default::default()
+    }
+}
+
+fn normalize_ticker(ticker: &str) -> Result<&str, BlpAsyncError> {
+    let trimmed = ticker.trim();
+    if trimmed.is_empty() {
+        return Err(BlpAsyncError::ConfigError {
+            detail: "ticker is required".to_string(),
+        });
+    }
+    Ok(trimmed)
 }
 
 fn parse_exchange_info(ticker: &str, batch: &arrow::record_batch::RecordBatch) -> ExchangeInfo {
@@ -199,6 +217,10 @@ fn parse_exchange_info(ticker: &str, batch: &arrow::record_batch::RecordBatch) -
         source,
         cached_at: None,
     }
+}
+
+fn get_string_from(batch: &arrow::record_batch::RecordBatch, fields: &[&str]) -> Option<String> {
+    fields.iter().find_map(|field| get_string(batch, field))
 }
 
 fn parse_futures_hours(raw: &str) -> Option<(String, String)> {

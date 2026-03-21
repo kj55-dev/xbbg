@@ -182,6 +182,22 @@ fn to_option_overrides(overrides: Vec<(String, String)>) -> Option<Vec<(String, 
     }
 }
 
+fn collect_values<T, A, F>(array: &A, mut map_value: F) -> Vec<Option<T>>
+where
+    A: Array,
+    F: FnMut(&A, usize) -> Option<T>,
+{
+    (0..array.len())
+        .map(|idx| {
+            if array.is_null(idx) {
+                None
+            } else {
+                map_value(array, idx)
+            }
+        })
+        .collect()
+}
+
 fn build_earning_header_rename(
     header_batch: &RecordBatch,
     data_batch: &RecordBatch,
@@ -361,59 +377,19 @@ fn is_earning_value_column(name: &str) -> bool {
 
 fn extract_numeric_values(array: &ArrayRef) -> Vec<Option<f64>> {
     if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    Some(arr.value(idx))
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| Some(arr.value(idx)));
     }
     if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    Some(arr.value(idx) as f64)
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| Some(arr.value(idx) as f64));
     }
     if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    Some(arr.value(idx) as f64)
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| Some(arr.value(idx) as f64));
     }
     if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    parse_f64_like(arr.value(idx))
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| parse_f64_like(arr.value(idx)));
     }
     if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    parse_f64_like(arr.value(idx))
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| parse_f64_like(arr.value(idx)));
     }
 
     vec![None; array.len()]
@@ -421,64 +397,26 @@ fn extract_numeric_values(array: &ArrayRef) -> Vec<Option<f64>> {
 
 fn extract_level_values(array: &ArrayRef) -> Vec<Option<i64>> {
     if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    Some(arr.value(idx))
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| Some(arr.value(idx)));
     }
     if let Some(arr) = array.as_any().downcast_ref::<Int32Array>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    Some(arr.value(idx) as i64)
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| Some(arr.value(idx) as i64));
     }
     if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    let v = arr.value(idx);
-                    if v.is_finite() && v.fract() == 0.0 {
-                        Some(v as i64)
-                    } else {
-                        None
-                    }
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| {
+            let v = arr.value(idx);
+            if v.is_finite() && v.fract() == 0.0 {
+                Some(v as i64)
+            } else {
+                None
+            }
+        });
     }
     if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    parse_i64_like(arr.value(idx))
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| parse_i64_like(arr.value(idx)));
     }
     if let Some(arr) = array.as_any().downcast_ref::<LargeStringArray>() {
-        return (0..arr.len())
-            .map(|idx| {
-                if arr.is_null(idx) {
-                    None
-                } else {
-                    parse_i64_like(arr.value(idx))
-                }
-            })
-            .collect();
+        return collect_values(arr, |arr, idx| parse_i64_like(arr.value(idx)));
     }
 
     vec![None; array.len()]
@@ -550,6 +488,35 @@ fn insert_pct_column_after(
     RecordBatch::try_new(schema, columns).map_err(Into::into)
 }
 
+fn build_turnover_overrides(ccy: Option<&str>) -> OverridePairs {
+    let mut overrides = vec![];
+    if let Some(currency) = ccy {
+        if currency.to_lowercase() != "local" {
+            overrides.push(("EQY_FUND_CRNCY".to_string(), currency.to_string()));
+        }
+    }
+
+    overrides
+}
+
+fn build_etf_holdings_fields(fields: Option<Vec<String>>) -> Vec<String> {
+    let mut all_fields = vec![
+        "id_isin".to_string(),
+        "weights".to_string(),
+        "id().position".to_string(),
+    ];
+
+    if let Some(extra) = fields {
+        for field in extra {
+            if !all_fields.contains(&field) {
+                all_fields.push(field);
+            }
+        }
+    }
+
+    all_fields
+}
+
 /// Fetch trading volume and turnover for securities.
 ///
 /// Requests the TURNOVER field via HistoricalData. Callers may perform
@@ -576,12 +543,7 @@ pub async fn recipe_turnover(
     ccy: Option<String>,
     _factor: Option<f64>,
 ) -> Result<RecordBatch> {
-    let mut overrides = vec![];
-    if let Some(c) = ccy {
-        if c.to_lowercase() != "local" {
-            overrides.push(("EQY_FUND_CRNCY".to_string(), c));
-        }
-    }
+    let overrides = build_turnover_overrides(ccy.as_deref());
 
     let params = RequestParams {
         service: Service::RefData.to_string(),
@@ -590,11 +552,7 @@ pub async fn recipe_turnover(
         fields: Some(vec!["TURNOVER".to_string()]),
         start_date: Some(start_date),
         end_date: Some(end_date),
-        overrides: if overrides.is_empty() {
-            None
-        } else {
-            Some(overrides)
-        },
+        overrides: to_option_overrides(overrides),
         ..Default::default()
     };
 
@@ -620,21 +578,7 @@ pub async fn recipe_etf_holdings(
     etf_ticker: String,
     fields: Option<Vec<String>>,
 ) -> Result<RecordBatch> {
-    // Default fields for ETF holdings
-    let mut all_fields = vec![
-        "id_isin".to_string(),
-        "weights".to_string(),
-        "id().position".to_string(),
-    ];
-
-    // Append additional fields if provided
-    if let Some(extra) = fields {
-        for f in extra {
-            if !all_fields.contains(&f) {
-                all_fields.push(f);
-            }
-        }
-    }
+    let all_fields = build_etf_holdings_fields(fields);
 
     let fields_str = all_fields.join(", ");
     let bql_query = format!("get({fields_str}) for(holdings('{etf_ticker}'))");
@@ -797,25 +741,13 @@ mod tests {
     #[test]
     fn test_turnover_ccy_override_local() {
         // "local" currency should produce no overrides
-        let ccy = Some("local".to_string());
-        let mut overrides = vec![];
-        if let Some(c) = &ccy {
-            if c.to_lowercase() != "local" {
-                overrides.push(("EQY_FUND_CRNCY".to_string(), c.clone()));
-            }
-        }
+        let overrides = build_turnover_overrides(Some("local"));
         assert!(overrides.is_empty());
     }
 
     #[test]
     fn test_turnover_ccy_override_usd() {
-        let ccy = Some("USD".to_string());
-        let mut overrides = vec![];
-        if let Some(c) = &ccy {
-            if c.to_lowercase() != "local" {
-                overrides.push(("EQY_FUND_CRNCY".to_string(), c.clone()));
-            }
-        }
+        let overrides = build_turnover_overrides(Some("USD"));
         assert_eq!(overrides.len(), 1);
         assert_eq!(
             overrides[0],
@@ -825,49 +757,20 @@ mod tests {
 
     #[test]
     fn test_turnover_ccy_none() {
-        let ccy: Option<String> = None;
-        let mut overrides = vec![];
-        if let Some(c) = &ccy {
-            if c.to_lowercase() != "local" {
-                overrides.push(("EQY_FUND_CRNCY".to_string(), c.clone()));
-            }
-        }
+        let overrides = build_turnover_overrides(None);
         assert!(overrides.is_empty());
     }
 
     #[test]
     fn test_etf_holdings_default_fields() {
-        let fields: Option<Vec<String>> = None;
-        let mut all_fields = vec![
-            "id_isin".to_string(),
-            "weights".to_string(),
-            "id().position".to_string(),
-        ];
-        if let Some(extra) = fields {
-            for f in extra {
-                if !all_fields.contains(&f) {
-                    all_fields.push(f);
-                }
-            }
-        }
+        let all_fields = build_etf_holdings_fields(None);
         assert_eq!(all_fields, vec!["id_isin", "weights", "id().position"]);
     }
 
     #[test]
     fn test_etf_holdings_custom_fields() {
-        let fields = Some(vec!["name".to_string(), "px_last".to_string()]);
-        let mut all_fields = vec![
-            "id_isin".to_string(),
-            "weights".to_string(),
-            "id().position".to_string(),
-        ];
-        if let Some(extra) = fields {
-            for f in extra {
-                if !all_fields.contains(&f) {
-                    all_fields.push(f);
-                }
-            }
-        }
+        let all_fields =
+            build_etf_holdings_fields(Some(vec!["name".to_string(), "px_last".to_string()]));
         assert_eq!(
             all_fields,
             vec!["id_isin", "weights", "id().position", "name", "px_last"]
@@ -876,19 +779,8 @@ mod tests {
 
     #[test]
     fn test_etf_holdings_no_duplicate_fields() {
-        let fields = Some(vec!["id_isin".to_string(), "name".to_string()]);
-        let mut all_fields = vec![
-            "id_isin".to_string(),
-            "weights".to_string(),
-            "id().position".to_string(),
-        ];
-        if let Some(extra) = fields {
-            for f in extra {
-                if !all_fields.contains(&f) {
-                    all_fields.push(f);
-                }
-            }
-        }
+        let all_fields =
+            build_etf_holdings_fields(Some(vec!["id_isin".to_string(), "name".to_string()]));
         // id_isin should not be duplicated
         assert_eq!(
             all_fields,

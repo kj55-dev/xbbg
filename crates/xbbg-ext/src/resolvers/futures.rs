@@ -110,22 +110,11 @@ fn generate_contract_months(
         ExtError::Internal(format!("failed to normalize contract month from {start}"))
     })?;
 
-    match freq {
-        RollFrequency::Monthly => {
-            while months.len() < count {
-                months.push(current);
-                current = next_month(current)?;
-            }
+    while months.len() < count {
+        if matches!(freq, RollFrequency::Monthly) || QUARTERLY_MONTHS.contains(&current.month()) {
+            months.push(current);
         }
-        RollFrequency::Quarterly => {
-            // Find next quarterly month
-            while months.len() < count {
-                if QUARTERLY_MONTHS.contains(&current.month()) {
-                    months.push(current);
-                }
-                current = next_month(current)?;
-            }
-        }
+        current = next_month(current)?;
     }
 
     Ok(months)
@@ -150,18 +139,16 @@ fn build_contract_ticker(parts: &TickerParts, month: NaiveDate, same_month: bool
         format!("{:02}", year % 100)
     };
 
-    match parts.asset.as_str() {
-        "Equity" => {
-            let exchange = parts.exchange.as_deref().unwrap_or("US");
-            format!(
-                "{}{}{} {} {}",
-                parts.prefix, month_code, year_str, exchange, parts.asset
-            )
-        }
-        _ => {
-            format!("{}{}{} {}", parts.prefix, month_code, year_str, parts.asset)
-        }
-    }
+    let exchange = if parts.asset == "Equity" {
+        format!(" {}", parts.exchange.as_deref().unwrap_or("US"))
+    } else {
+        String::new()
+    };
+
+    format!(
+        "{}{}{}{} {}",
+        parts.prefix, month_code, year_str, exchange, parts.asset
+    )
 }
 
 /// Validate that a ticker is generic (not specific).

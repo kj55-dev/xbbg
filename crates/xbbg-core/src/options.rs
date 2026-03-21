@@ -26,9 +26,7 @@ impl SessionOptions {
     }
 
     pub fn set_server_host(&mut self, host: &str) -> Result<&mut Self> {
-        let cs = CString::new(host).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid host: {e}"),
-        })?;
+        let cs = cstring(host, "host")?;
         // SAFETY: self.ptr is valid (checked in new()), cs is a valid null-terminated C string.
         unsafe { ffi::blpapi_SessionOptions_setServerHost(self.ptr, cs.as_ptr()) };
         Ok(self)
@@ -41,19 +39,14 @@ impl SessionOptions {
     }
 
     pub fn set_server_address(&mut self, host: &str, port: u16, index: usize) -> Result<&mut Self> {
-        let cs = CString::new(host).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid host: {e}"),
-        })?;
+        let cs = cstring(host, "host")?;
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setServerAddress(self.ptr, cs.as_ptr(), port, index)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!(
-                    "setServerAddress failed: host={host} port={port} index={index} rc={rc}"
-                ),
-            });
-        }
+        check_rc(
+            rc,
+            format!("setServerAddress failed: host={host} port={port} index={index} rc={rc}"),
+        )?;
         Ok(self)
     }
 
@@ -78,9 +71,7 @@ impl SessionOptions {
     }
 
     pub fn set_authentication_options(&mut self, auth_options: &str) -> Result<&mut Self> {
-        let auth_options = CString::new(auth_options).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid auth options: {e}"),
-        })?;
+        let auth_options = cstring(auth_options, "auth options")?;
         unsafe {
             ffi::blpapi_SessionOptions_setAuthenticationOptions(self.ptr, auth_options.as_ptr());
         }
@@ -98,9 +89,7 @@ impl SessionOptions {
     }
 
     pub fn set_default_subscription_service(&mut self, svc: &str) -> Result<&mut Self> {
-        let cs = CString::new(svc).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid service: {e}"),
-        })?;
+        let cs = cstring(svc, "service")?;
         // SAFETY: FFI call with valid pointers
         unsafe {
             ffi::blpapi_SessionOptions_setDefaultSubscriptionService(self.ptr, cs.as_ptr());
@@ -109,9 +98,7 @@ impl SessionOptions {
     }
 
     pub fn set_default_topic_prefix(&mut self, prefix: &str) -> Result<&mut Self> {
-        let cs = CString::new(prefix).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid prefix: {e}"),
-        })?;
+        let cs = cstring(prefix, "prefix")?;
         // SAFETY: FFI call with valid pointers
         unsafe {
             ffi::blpapi_SessionOptions_setDefaultTopicPrefix(self.ptr, cs.as_ptr());
@@ -146,22 +133,14 @@ impl SessionOptions {
     pub fn set_connect_timeout_ms(&mut self, timeout_ms: u32) -> Result<&mut Self> {
         // SAFETY: FFI call with valid pointer
         let rc = unsafe { ffi::blpapi_SessionOptions_setConnectTimeout(self.ptr, timeout_ms) };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("connect timeout invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("connect timeout invalid: rc={rc}"))?;
         Ok(self)
     }
 
     pub fn set_service_check_timeout_ms(&mut self, timeout_ms: i32) -> Result<&mut Self> {
         // SAFETY: FFI call with valid pointer
         let rc = unsafe { ffi::blpapi_SessionOptions_setServiceCheckTimeout(self.ptr, timeout_ms) };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("service check timeout invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("service check timeout invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -169,11 +148,7 @@ impl SessionOptions {
         // SAFETY: FFI call with valid pointer
         let rc =
             unsafe { ffi::blpapi_SessionOptions_setServiceDownloadTimeout(self.ptr, timeout_ms) };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("service download timeout invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("service download timeout invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -209,11 +184,7 @@ impl SessionOptions {
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setSlowConsumerWarningHiWaterMark(self.ptr, hi_watermark)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("slow consumer hi watermark invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("slow consumer hi watermark invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -229,11 +200,7 @@ impl SessionOptions {
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setSlowConsumerWarningLoWaterMark(self.ptr, lo_watermark)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("slow consumer lo watermark invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("slow consumer lo watermark invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -244,11 +211,7 @@ impl SessionOptions {
         // SAFETY: FFI call with valid pointer
         let rc =
             unsafe { ffi::blpapi_SessionOptions_setKeepAliveEnabled(self.ptr, enabled as i32) };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("keep alive enabled invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("keep alive enabled invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -260,11 +223,7 @@ impl SessionOptions {
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setDefaultKeepAliveInactivityTime(self.ptr, time_ms)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("keep alive inactivity time invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("keep alive inactivity time invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -276,11 +235,7 @@ impl SessionOptions {
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setDefaultKeepAliveResponseTimeout(self.ptr, timeout_ms)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("keep alive response timeout invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("keep alive response timeout invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -293,11 +248,7 @@ impl SessionOptions {
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setBandwidthSaveModeDisabled(self.ptr, disabled as i32)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("bandwidth save mode disabled invalid: rc={rc}"),
-            });
-        }
+        check_rc(rc, format!("bandwidth save mode disabled invalid: rc={rc}"))?;
         Ok(self)
     }
 
@@ -309,11 +260,10 @@ impl SessionOptions {
         let rc = unsafe {
             ffi::blpapi_SessionOptions_setFlushPublishedEventsTimeout(self.ptr, timeout_ms)
         };
-        if rc != 0 {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("flush published events timeout invalid: rc={rc}"),
-            });
-        }
+        check_rc(
+            rc,
+            format!("flush published events timeout invalid: rc={rc}"),
+        )?;
         Ok(self)
     }
 
@@ -334,4 +284,17 @@ impl Drop for SessionOptions {
             self.ptr = std::ptr::null_mut();
         }
     }
+}
+
+fn cstring(value: &str, field: &str) -> Result<CString> {
+    CString::new(value).map_err(|e| BlpError::InvalidArgument {
+        detail: format!("invalid {field}: {e}"),
+    })
+}
+
+fn check_rc(rc: i32, detail: String) -> Result<()> {
+    if rc != 0 {
+        return Err(BlpError::InvalidArgument { detail });
+    }
+    Ok(())
 }

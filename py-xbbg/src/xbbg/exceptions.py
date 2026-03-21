@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from types import ModuleType
+from typing import Any, cast
 
 
 class _FallbackBlpError(Exception):
@@ -47,10 +48,10 @@ def _get_fallback_exception_types() -> dict[str, type[Exception]]:
     """Return a stable fallback hierarchy reused across module reloads."""
     package = sys.modules.get("xbbg")
     cached = getattr(package, "_fallback_exception_types", None) if package is not None else None
-    if cached is not None:
-        return cached
+    if isinstance(cached, dict):
+        return cast("dict[str, type[Exception]]", cached)
 
-    fallback = {
+    fallback: dict[str, type[Exception]] = {
         "BlpError": _FallbackBlpError,
         "BlpSessionError": _FallbackBlpSessionError,
         "BlpRequestError": _FallbackBlpRequestError,
@@ -61,20 +62,21 @@ def _get_fallback_exception_types() -> dict[str, type[Exception]]:
         "BlpInternalError": _FallbackBlpInternalError,
     }
     if package is not None:
-        package._fallback_exception_types = fallback
+        cast("Any", package)._fallback_exception_types = fallback
     return fallback
 
 
 _FALLBACK_EXCEPTION_TYPES = _get_fallback_exception_types()
 
-BlpError = _FALLBACK_EXCEPTION_TYPES["BlpError"]
-BlpSessionError = _FALLBACK_EXCEPTION_TYPES["BlpSessionError"]
-BlpRequestError = _FALLBACK_EXCEPTION_TYPES["BlpRequestError"]
-BlpSecurityError = _FALLBACK_EXCEPTION_TYPES["BlpSecurityError"]
-BlpFieldError = _FALLBACK_EXCEPTION_TYPES["BlpFieldError"]
-BlpValidationError = _FALLBACK_EXCEPTION_TYPES["BlpValidationError"]
-BlpTimeoutError = _FALLBACK_EXCEPTION_TYPES["BlpTimeoutError"]
-BlpInternalError = _FALLBACK_EXCEPTION_TYPES["BlpInternalError"]
+BlpError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpError"]
+BlpSessionError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpSessionError"]
+BlpRequestError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpRequestError"]
+BlpSecurityError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpSecurityError"]
+BlpFieldError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpFieldError"]
+BlpValidationError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpValidationError"]
+BlpTimeoutError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpTimeoutError"]
+BlpInternalError: type[Exception] = _FALLBACK_EXCEPTION_TYPES["BlpInternalError"]
+BlpBPipeError: type[Exception]
 
 
 def _init_request_error(
@@ -133,10 +135,10 @@ def _parse_validation_error(message: str) -> tuple[str | None, str | None]:
     return element, suggestion
 
 
-def _from_rust_error(cls, message: str):
+def _from_rust_error(cls: type[Exception], message: str) -> Exception:
     """Back-compat helper for constructing ``BlpValidationError`` from text."""
     element, suggestion = _parse_validation_error(message)
-    err = cls(message)
+    err = cast("Any", cls(message))
     if element is not None:
         err.element = element
     if suggestion is not None:
@@ -145,28 +147,52 @@ def _from_rust_error(cls, message: str):
 
 
 def _make_bpipe_error(base_cls: type[Exception]) -> type[Exception]:
-    class _BlpBPipeError(base_cls):
-        """B-PIPE license required for this operation.
+    return cast(
+        "type[Exception]",
+        type(
+            "BlpBPipeError",
+            (cast("Any", base_cls),),
+            {
+                "__doc__": (
+                    "B-PIPE license required for this operation.\n\n"
+                    "Raised when attempting to use features that require Bloomberg "
+                    "B-PIPE license but only a standard Terminal connection is available.\n\n"
+                    "B-PIPE features include:\n"
+                    "    - Level 2 market depth data (depth/adepth)\n"
+                    "    - Option and futures chains (chains/achains)"
+                ),
+                "__module__": __name__,
+                "__qualname__": "BlpBPipeError",
+            },
+        ),
+    )
 
-        Raised when attempting to use features that require Bloomberg B-PIPE
-        license but only a standard Terminal connection is available.
 
-        B-PIPE features include:
-            - Level 2 market depth data (depth/adepth)
-            - Option and futures chains (chains/achains)
-        """
+def _set_request_error_init(exc_type: type[Exception]) -> None:
+    cast("Any", exc_type).__init__ = _init_request_error
 
-    _BlpBPipeError.__name__ = "BlpBPipeError"
-    _BlpBPipeError.__qualname__ = "BlpBPipeError"
-    _BlpBPipeError.__module__ = __name__
-    return _BlpBPipeError
+
+def _set_validation_error_compatibility(exc_type: type[Exception]) -> None:
+    compat_exc = cast("Any", exc_type)
+    compat_exc.__init__ = _init_validation_error
+    compat_exc.from_rust_error = classmethod(_from_rust_error)
+
+
+def _apply_exception_compatibility() -> None:
+    """Attach Python-side compatibility helpers to the current public types."""
+    global BlpBPipeError
+
+    for exc_type in (BlpRequestError, BlpSecurityError, BlpFieldError):
+        _set_request_error_init(exc_type)
+
+    _set_validation_error_compatibility(BlpValidationError)
+    BlpBPipeError = _make_bpipe_error(BlpError)
 
 
 def _bind_core_exceptions(core_module: ModuleType) -> None:
     """Rebind public exception names to the canonical Rust exception classes."""
     global BlpError, BlpSessionError, BlpRequestError, BlpSecurityError
     global BlpFieldError, BlpValidationError, BlpTimeoutError, BlpInternalError
-    global BlpBPipeError
 
     BlpError = core_module.BlpError
     BlpSessionError = core_module.BlpSessionError
@@ -177,26 +203,18 @@ def _bind_core_exceptions(core_module: ModuleType) -> None:
     BlpTimeoutError = core_module.BlpTimeoutError
     BlpInternalError = core_module.BlpInternalError
 
-    BlpRequestError.__init__ = _init_request_error
-    BlpSecurityError.__init__ = _init_request_error
-    BlpFieldError.__init__ = _init_request_error
-    BlpValidationError.__init__ = _init_validation_error
-    BlpValidationError.from_rust_error = classmethod(_from_rust_error)
-
-    BlpBPipeError = _make_bpipe_error(BlpError)
+    _apply_exception_compatibility()
 
 
-BlpRequestError.__init__ = _init_request_error
-BlpSecurityError.__init__ = _init_request_error
-BlpFieldError.__init__ = _init_request_error
-BlpValidationError.__init__ = _init_validation_error
-BlpBPipeError = _make_bpipe_error(BlpError)
-BlpValidationError.from_rust_error = classmethod(_from_rust_error)
+_apply_exception_compatibility()
 
+_initial_core: ModuleType | None = None
 try:
-    from . import _core as _initial_core
+    from . import _core as _loaded_core
 except ImportError:
-    _initial_core = None
+    pass
+else:
+    _initial_core = _loaded_core
 
 if _initial_core is not None:
     _bind_core_exceptions(_initial_core)

@@ -28,6 +28,12 @@ const CURRENCY_FIELD: &str = "CRNCY";
 
 type FxRatesByPair = HashMap<String, HashMap<i32, f64>>;
 
+struct BatchValueView<'a> {
+    ticker_col: &'a StringArray,
+    field_col: &'a StringArray,
+    value_col: &'a ArrayRef,
+}
+
 /// Adjust a wide historical RecordBatch into a target currency.
 ///
 /// Workflow:
@@ -212,37 +218,14 @@ async fn fetch_ticker_currencies(
 }
 
 fn parse_currency_batch(batch: &RecordBatch) -> Result<HashMap<String, String>> {
-    if batch.num_rows() == 0 {
-        return Ok(HashMap::new());
-    }
-
-    let ticker_col = as_string_col(batch, "ticker")?;
-    let field_col = as_string_col(batch, "field")?;
-    let value_col = find_value_column(batch)?;
-
-    let mut out = HashMap::new();
-    for row in 0..batch.num_rows() {
-        if ticker_col.is_null(row) || field_col.is_null(row) {
-            continue;
-        }
-
-        if !field_col.value(row).eq_ignore_ascii_case(CURRENCY_FIELD) {
-            continue;
-        }
-
-        let Some(value) = array_value_as_string(value_col, row) else {
-            continue;
-        };
-
+    Ok(parse_batch_rows(batch, CURRENCY_FIELD, |view, row| {
+        let value = array_value_as_string(view.value_col, row)?;
         let currency = value.trim();
-        if currency.is_empty() {
-            continue;
-        }
-
-        out.insert(ticker_col.value(row).to_string(), currency.to_string());
-    }
-
-    Ok(out)
+        (!currency.is_empty())
+            .then(|| (view.ticker_col.value(row).to_string(), currency.to_string()))
+    })?
+    .into_iter()
+    .collect())
 }
 
 async fn fetch_fx_rates(
@@ -270,13 +253,6 @@ async fn fetch_fx_rates(
 }
 
 fn parse_fx_rate_batch(batch: &RecordBatch) -> Result<FxRatesByPair> {
-    if batch.num_rows() == 0 {
-        return Ok(HashMap::new());
-    }
-
-    let ticker_col = as_string_col(batch, "ticker")?;
-    let field_col = as_string_col(batch, "field")?;
-    let value_col = find_value_column(batch)?;
     let date_keys = extract_date_keys(batch)?.ok_or_else(|| {
         RecipeError::Other("FX rate response missing required 'date' column".to_string())
     })?;
@@ -288,30 +264,13 @@ fn parse_fx_rate_batch(batch: &RecordBatch) -> Result<FxRatesByPair> {
     }
 
     let mut out: FxRatesByPair = HashMap::new();
-    for (row, date_key) in date_keys.iter().copied().enumerate() {
-        if ticker_col.is_null(row) || field_col.is_null(row) {
-            continue;
-        }
-
-        if !field_col.value(row).eq_ignore_ascii_case(FX_FIELD) {
-            continue;
-        }
-
-        let Some(date_key) = date_key else {
-            continue;
-        };
-
-        let Some(rate) = array_value_as_f64(value_col, row) else {
-            continue;
-        };
-
-        if rate.abs() <= f64::EPSILON {
-            continue;
-        }
-
-        out.entry(ticker_col.value(row).to_string())
-            .or_default()
-            .insert(date_key, rate);
+    for (ticker, date_key, rate) in parse_batch_rows(batch, FX_FIELD, |view, row| {
+        let date_key = date_keys.get(row).copied().flatten()?;
+        let rate = array_value_as_f64(view.value_col, row)?;
+        (rate.abs() > f64::EPSILON)
+            .then(|| (view.ticker_col.value(row).to_string(), date_key, rate))
+    })? {
+        out.entry(ticker).or_default().insert(date_key, rate);
     }
 
     Ok(out)
@@ -346,44 +305,14 @@ fn apply_fx_conversion(
             continue;
         };
 
-        let Some(values) = input_col.as_any().downcast_ref::<Float64Array>() else {
-            new_columns.push(input_col);
-            continue;
-        };
-
-        let Some(rates_by_date) = fx_rates.get(&fx_info.fx_pair) else {
-            new_columns.push(input_col);
-            continue;
-        };
-
-        let fx_rate_array = build_fx_rate_array(values.len(), date_keys, rates_by_date);
-        if fx_rate_array.null_count() == fx_rate_array.len() {
-            new_columns.push(input_col);
-            continue;
-        }
-
-        let denominator: ArrayRef = if (fx_info.factor - 1.0).abs() > f64::EPSILON {
-            let factor_array = Float64Array::from(vec![Some(fx_info.factor); values.len()]);
-            mul(&fx_rate_array, &factor_array).map_err(|err| {
-                RecipeError::Other(format!(
-                    "failed to scale FX rates for '{ticker}' ({}): {err}",
-                    fx_info.fx_pair
-                ))
-            })?
-        } else {
-            Arc::new(fx_rate_array)
-        };
-
-        let denominator_datum: &dyn Datum = &denominator.as_ref();
-        let converted = div(values, denominator_datum).map_err(|err| {
-            RecipeError::Other(format!(
-                "failed to convert column '{}' using FX pair '{}': {err}",
-                field.name(),
-                fx_info.fx_pair
-            ))
-        })?;
-
-        new_columns.push(converted);
+        new_columns.push(convert_fx_column(
+            field.name(),
+            input_col,
+            ticker,
+            fx_info,
+            date_keys,
+            fx_rates,
+        )?);
     }
 
     RecordBatch::try_new(schema, new_columns).map_err(Into::into)
@@ -493,6 +422,92 @@ fn find_value_column(batch: &RecordBatch) -> Result<&ArrayRef> {
                     .to_string(),
             )
         })
+}
+
+fn batch_value_view(batch: &RecordBatch) -> Result<BatchValueView<'_>> {
+    Ok(BatchValueView {
+        ticker_col: as_string_col(batch, "ticker")?,
+        field_col: as_string_col(batch, "field")?,
+        value_col: find_value_column(batch)?,
+    })
+}
+
+impl BatchValueView<'_> {
+    fn matches_field(&self, row: usize, expected: &str) -> bool {
+        !self.ticker_col.is_null(row)
+            && !self.field_col.is_null(row)
+            && self.field_col.value(row).eq_ignore_ascii_case(expected)
+    }
+}
+
+fn parse_batch_rows<T, F>(
+    batch: &RecordBatch,
+    expected_field: &str,
+    mut parse_row: F,
+) -> Result<Vec<T>>
+where
+    F: FnMut(&BatchValueView<'_>, usize) -> Option<T>,
+{
+    if batch.num_rows() == 0 {
+        return Ok(Vec::new());
+    }
+
+    let view = batch_value_view(batch)?;
+    let mut rows = Vec::new();
+
+    for row in 0..batch.num_rows() {
+        if !view.matches_field(row, expected_field) {
+            continue;
+        }
+
+        if let Some(value) = parse_row(&view, row) {
+            rows.push(value);
+        }
+    }
+
+    Ok(rows)
+}
+
+fn convert_fx_column(
+    field_name: &str,
+    input_col: ArrayRef,
+    ticker: &str,
+    fx_info: &FxConversionInfo,
+    date_keys: &[Option<i32>],
+    fx_rates: &FxRatesByPair,
+) -> Result<ArrayRef> {
+    let Some(values) = input_col.as_any().downcast_ref::<Float64Array>() else {
+        return Ok(input_col);
+    };
+
+    let Some(rates_by_date) = fx_rates.get(&fx_info.fx_pair) else {
+        return Ok(input_col);
+    };
+
+    let fx_rate_array = build_fx_rate_array(values.len(), date_keys, rates_by_date);
+    if fx_rate_array.null_count() == fx_rate_array.len() {
+        return Ok(input_col);
+    }
+
+    let denominator: ArrayRef = if (fx_info.factor - 1.0).abs() > f64::EPSILON {
+        let factor_array = Float64Array::from(vec![Some(fx_info.factor); values.len()]);
+        mul(&fx_rate_array, &factor_array).map_err(|err| {
+            RecipeError::Other(format!(
+                "failed to scale FX rates for '{ticker}' ({}): {err}",
+                fx_info.fx_pair
+            ))
+        })?
+    } else {
+        Arc::new(fx_rate_array)
+    };
+
+    let denominator_datum: &dyn Datum = &denominator.as_ref();
+    div(values, denominator_datum).map_err(|err| {
+        RecipeError::Other(format!(
+            "failed to convert column '{field_name}' using FX pair '{}': {err}",
+            fx_info.fx_pair
+        ))
+    })
 }
 
 fn array_value_as_string(array: &ArrayRef, row: usize) -> Option<String> {
@@ -606,6 +621,79 @@ mod tests {
         assert_eq!(fx_by_ticker.len(), 2);
         assert_eq!(fx_by_ticker["VOD LN Equity"].factor, 1.0);
         assert_eq!(fx_by_ticker["BARC LN Equity"].factor, 100.0);
+    }
+
+    #[test]
+    fn test_parse_currency_batch_trims_and_skips_invalid_rows() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ticker", DataType::Utf8, true),
+            Field::new("field", DataType::Utf8, true),
+            Field::new("value", DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    Some("AAPL US Equity"),
+                    Some("VOD LN Equity"),
+                    Some("MSFT US Equity"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some("CRNCY"),
+                    Some("CRNCY"),
+                    Some("PX_LAST"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(" USD "),
+                    Some("   "),
+                    Some("EUR"),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let currencies = parse_currency_batch(&batch).unwrap();
+        assert_eq!(currencies.len(), 1);
+        assert_eq!(currencies["AAPL US Equity"], "USD");
+    }
+
+    #[test]
+    fn test_parse_fx_rate_batch_parses_dates_and_filters_invalid_values() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("date", DataType::Utf8, true),
+            Field::new("ticker", DataType::Utf8, true),
+            Field::new("field", DataType::Utf8, true),
+            Field::new("value", DataType::Float64, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![
+                    Some("2024-01-01"),
+                    Some("2024-01-02"),
+                    Some("2024-01-03"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some("USDGBP Curncy"),
+                    Some("USDGBP Curncy"),
+                    Some("USDGBP Curncy"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some("PX_LAST"),
+                    Some("PX_LAST"),
+                    Some("BID"),
+                ])),
+                Arc::new(Float64Array::from(vec![Some(1.25), Some(0.0), Some(1.50)])),
+            ],
+        )
+        .unwrap();
+
+        let rates = parse_fx_rate_batch(&batch).unwrap();
+        let date_key = parse_date_key("2024-01-01").unwrap();
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates["USDGBP Curncy"][&date_key], 1.25);
     }
 
     #[test]

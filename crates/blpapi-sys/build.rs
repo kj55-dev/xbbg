@@ -172,6 +172,7 @@ fn resolve_include_and_lib_dirs() -> Result<(PathBuf, PathBuf), String> {
 
 fn derive_include_lib(root: &Path) -> Result<(PathBuf, PathBuf), String> {
     let inc = root.join("include");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
 
     // Try common layouts:
@@ -179,6 +180,12 @@ fn derive_include_lib(root: &Path) -> Result<(PathBuf, PathBuf), String> {
     let lib1 = root.join("lib");
     if inc.is_dir() && lib1.is_dir() {
         return Ok((inc, lib1));
+    }
+
+    // macOS vendor zips often place binaries under Darwin/ (sometimes symlinked from lib/)
+    let lib_macos = root.join("Darwin");
+    if target_os == "macos" && inc.is_dir() && lib_macos.is_dir() {
+        return Ok((inc, lib_macos));
     }
 
     // Windows: check architecture-specific lib directories
@@ -199,10 +206,49 @@ fn derive_include_lib(root: &Path) -> Result<(PathBuf, PathBuf), String> {
         return Ok((inc3, lib3));
     }
 
+    // Vendored roots may point at a parent directory containing versioned SDK folders.
+    if let Some((child_inc, child_lib)) = find_versioned_sdk_child(root) {
+        return Ok((child_inc, child_lib));
+    }
+
     Err(format!(
-        "Could not derive include/lib under {}. Expected include/ and lib/ (or lib/{win_lib_subdir}/).",
+        "Could not derive include/lib under {}. Expected include/ and lib/, include/ and Darwin/ on macOS, or lib/{win_lib_subdir}/ on Windows.",
         root.display()
     ))
+}
+
+fn find_versioned_sdk_child(root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut candidates: Vec<(Vec<u32>, PathBuf)> = fs::read_dir(root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter_map(|path| {
+            let version = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(parse_version_components)?;
+            Some((version, path))
+        })
+        .collect();
+
+    candidates.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    for (_version, child) in candidates.into_iter().rev() {
+        if let Ok((inc, lib)) = derive_include_lib(&child) {
+            return Some((inc, lib));
+        }
+    }
+
+    None
+}
+
+fn parse_version_components(name: &str) -> Option<Vec<u32>> {
+    let components: Vec<u32> = name
+        .split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    (!components.is_empty()).then_some(components)
 }
 
 fn validate_header_exists(include_dir: &Path) -> Result<(), String> {

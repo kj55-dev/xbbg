@@ -31,13 +31,17 @@ blpapi-sys/
 | Priority | Environment variable(s) | Notes |
 |----------|------------------------|-------|
 | 1 | `BLPAPI_INCLUDE_DIR` + `BLPAPI_LIB_DIR` | Explicit paths (CI/prod) |
-| 2 | `BLPAPI_ROOT` | Derives `include/` and `lib/` from root |
+| 2 | `BLPAPI_ROOT` | Derives SDK include/lib directories from a root |
 | 3 | `XBBG_DEV_SDK_ROOT` | Dev-only, same derivation as above |
 
 The build script tries these layouts under a root directory:
 - `<root>/include` + `<root>/lib`
+- `<root>/include` + `<root>/Darwin` (macOS vendor layout)
 - `<root>/include` + `<root>/lib/win64` (or `win32`)
 - `<root>/Include` + `<root>/Lib`
+
+If the configured root is a parent directory containing versioned SDK folders
+like `vendor/blpapi-sdk/3.26.1.1/`, the newest versioned child is selected automatically.
 
 Build requires SDK **headers** and the **import library**. The runtime DLL/so/dylib is not required at build time.
 

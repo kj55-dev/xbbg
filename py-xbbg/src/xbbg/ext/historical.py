@@ -20,7 +20,7 @@ Async functions (primary implementation):
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import narwhals.stable.v1 as nw
 
@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from datetime import date
 
     from narwhals.typing import IntoDataFrame
+
+    from xbbg.blp import DataFrameResult
 
 
 def _get_empty_dataframe() -> IntoDataFrame:
@@ -125,7 +127,7 @@ async def adividend(
 
         asyncio.run(main())
     """
-    from xbbg import abds
+    from xbbg.blp import abds
 
     # Pop 'raw' kwarg if present (not used by bds)
     kwargs.pop("raw", None)
@@ -316,7 +318,7 @@ async def aearnings(
 
         asyncio.run(main())
     """
-    from xbbg import abds
+    from xbbg.blp import abds
 
     # Pop 'raw' kwarg if present (not used by bds)
     kwargs.pop("raw", None)
@@ -392,13 +394,13 @@ async def _calc_turnover_from_volume(
     Returns:
         Tuple of (updated narwhals DataFrame, updated native DataFrame).
     """
-    from xbbg import abdh
+    from xbbg.blp import abdh
 
     vol_data = await abdh(
         tickers=missing_tickers,
         flds=["eqy_weighted_avg_px", "volume"],
-        start_date=start_date,
-        end_date=end_date,
+        start_date=_fmt_date(start_date),
+        end_date=_fmt_date(end_date) or "today",
         **kwargs,
     )
     vol_nw = nw.from_native(vol_data)
@@ -447,7 +449,7 @@ async def _calc_turnover_from_volume(
             turnover_df = turnover_df.with_columns(s)
 
         if len(nw_df) > 0:
-            nw_df = nw.concat([nw_df, turnover_df])
+            nw_df = cast("nw.DataFrame", nw.concat([nw_df, turnover_df]))
         else:
             nw_df = turnover_df
 
@@ -499,7 +501,7 @@ async def aturnover(
 
         asyncio.run(main())
     """
-    from xbbg import abdh
+    from xbbg.blp import abdh
     from xbbg.ext.currency import aconvert_ccy
 
     # Compute default date range using Rust (handles yesterday/30-day defaults)
@@ -570,7 +572,7 @@ async def aetf_holdings(
     *,
     fields: list[str] | None = None,
     **kwargs,
-) -> IntoDataFrame:
+) -> DataFrameResult:
     """Async get ETF holdings using Bloomberg Query Language (BQL).
 
     Retrieves holdings information for an ETF including ISIN, weights, and position IDs.
@@ -610,8 +612,8 @@ async def aetf_holdings(
 
         asyncio.run(main())
     """
-    from xbbg import abql
     from xbbg._core import ext_rename_etf_columns
+    from xbbg.blp import abql
 
     # Build BQL query using Rust (handles ticker normalization, field defaults)
     extra = list(fields) if fields else []
@@ -621,7 +623,7 @@ async def aetf_holdings(
     df = await abql(bql_query, **kwargs)
 
     # Convert to narwhals for manipulation
-    nw_df = nw.from_native(df)
+    nw_df = cast("nw.DataFrame", nw.from_native(df))
 
     if len(nw_df) == 0:
         return df

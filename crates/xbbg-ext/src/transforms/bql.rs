@@ -2,6 +2,48 @@
 //!
 //! Provides functions to construct BQL query strings for common workflows.
 
+fn normalize_us_equity_ticker(ticker: &str) -> String {
+    if ticker.contains(' ') {
+        ticker.to_string()
+    } else {
+        format!("{} US Equity", ticker)
+    }
+}
+
+fn dedupe_fields_case_insensitive<'a>(
+    default_fields: &[&'a str],
+    extra_fields: &'a [&'a str],
+) -> Vec<&'a str> {
+    let mut fields = default_fields.to_vec();
+
+    for field in extra_fields {
+        let lower = field.to_lowercase();
+        if !fields
+            .iter()
+            .any(|existing| existing.to_lowercase() == lower)
+        {
+            fields.push(field);
+        }
+    }
+
+    fields
+}
+
+fn dedupe_fields_case_sensitive<'a>(
+    default_fields: &[&'a str],
+    extra_fields: &'a [&'a str],
+) -> Vec<&'a str> {
+    let mut fields = default_fields.to_vec();
+
+    for field in extra_fields {
+        if !fields.contains(field) {
+            fields.push(field);
+        }
+    }
+
+    fields
+}
+
 /// Build a BQL query for preferred stocks.
 ///
 /// Uses Bloomberg's debt filter to find preferred stock issues
@@ -32,23 +74,8 @@
 /// assert!(query2.contains("px_last"));
 /// ```
 pub fn build_preferreds_query(equity_ticker: &str, extra_fields: &[&str]) -> String {
-    // Normalize ticker
-    let ticker = if equity_ticker.contains(' ') {
-        equity_ticker.to_string()
-    } else {
-        format!("{} US Equity", equity_ticker)
-    };
-
-    // Build field list
-    let mut all_fields: Vec<&str> = vec!["id", "name"];
-    for f in extra_fields {
-        let lower = f.to_lowercase();
-        if !all_fields.iter().any(|af| af.to_lowercase() == lower) {
-            all_fields.push(f);
-        }
-    }
-
-    let fields_str = all_fields.join(", ");
+    let ticker = normalize_us_equity_ticker(equity_ticker);
+    let fields_str = dedupe_fields_case_insensitive(&["id", "name"], extra_fields).join(", ");
 
     format!(
         "get({}) for(filter(debt(['{}'], CONSOLIDATEDUPLICATES='N'), SRCH_ASSET_CLASS=='Preferreds'))",
@@ -94,18 +121,7 @@ pub fn build_corporate_bonds_query(
     extra_fields: &[&str],
     active_only: bool,
 ) -> String {
-    // Build field list
-    let mut all_fields: Vec<&str> = vec!["id"];
-    for f in extra_fields {
-        let lower = f.to_lowercase();
-        if !all_fields.iter().any(|af| af.to_lowercase() == lower) {
-            all_fields.push(f);
-        }
-    }
-
-    let fields_str = all_fields.join(", ");
-
-    // Build filter conditions
+    let fields_str = dedupe_fields_case_insensitive(&["id"], extra_fields).join(", ");
     let mut conditions = vec![
         "SRCH_ASSET_CLASS=='Corporates'".to_string(),
         format!("TICKER=='{}'", ticker),
@@ -151,22 +167,10 @@ pub fn build_corporate_bonds_query(
 /// assert!(query2.contains("name"));
 /// ```
 pub fn build_etf_holdings_query(etf_ticker: &str, extra_fields: &[&str]) -> String {
-    // Normalize ticker
-    let ticker = if etf_ticker.contains(' ') {
-        etf_ticker.to_string()
-    } else {
-        format!("{} US Equity", etf_ticker)
-    };
-
-    // Default fields
-    let mut all_fields: Vec<&str> = vec!["id_isin", "weights", "id().position"];
-    for f in extra_fields {
-        if !all_fields.contains(f) {
-            all_fields.push(f);
-        }
-    }
-
-    let fields_str = all_fields.join(", ");
+    let ticker = normalize_us_equity_ticker(etf_ticker);
+    let fields_str =
+        dedupe_fields_case_sensitive(&["id_isin", "weights", "id().position"], extra_fields)
+            .join(", ");
 
     format!("get({}) for(holdings('{}'))", fields_str, ticker)
 }

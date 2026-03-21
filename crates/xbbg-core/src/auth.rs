@@ -40,37 +40,73 @@ impl AuthConfig {
 
     pub fn build_auth_options(&self) -> Result<AuthOptions> {
         match self {
-            Self::User => {
-                let user = AuthUser::with_logon_name()?;
-                AuthOptions::for_user(&user)
-            }
+            Self::User => build_user_auth_options(AuthUser::with_logon_name()?),
             Self::App { app_name } => {
                 let app = AuthApplication::new(app_name)?;
                 AuthOptions::for_app(&app)
             }
-            Self::UserApp { app_name } => {
-                let user = AuthUser::with_logon_name()?;
-                let app = AuthApplication::new(app_name)?;
-                AuthOptions::for_user_and_app(&user, &app)
-            }
+            Self::UserApp { app_name } => build_user_and_app_auth_options(
+                AuthUser::with_logon_name()?,
+                AuthApplication::new(app_name)?,
+            ),
             Self::Directory { property_name } => {
-                let user = AuthUser::with_active_directory_property(property_name)?;
-                AuthOptions::for_user(&user)
+                build_user_auth_options(AuthUser::with_active_directory_property(property_name)?)
             }
             Self::Manual {
                 app_name,
                 user_id,
                 ip_address,
-            } => {
-                let user = AuthUser::with_manual_options(user_id, ip_address)?;
-                let app = AuthApplication::new(app_name)?;
-                AuthOptions::for_user_and_app(&user, &app)
-            }
+            } => build_user_and_app_auth_options(
+                AuthUser::with_manual_options(user_id, ip_address)?,
+                AuthApplication::new(app_name)?,
+            ),
             Self::Token { token } => {
                 let token = AuthToken::new(token)?;
                 AuthOptions::for_token(&token)
             }
         }
+    }
+}
+
+fn create_ffi_ptr<T, Create, MakeError>(
+    create: Create,
+    failure_detail: impl FnOnce(i32) -> String,
+    make_error: MakeError,
+) -> Result<*mut T>
+where
+    Create: FnOnce(*mut *mut T) -> i32,
+    MakeError: FnOnce(String) -> BlpError,
+{
+    let mut ptr = std::ptr::null_mut();
+    let rc = create(&mut ptr);
+    if rc != 0 || ptr.is_null() {
+        return Err(make_error(failure_detail(rc)));
+    }
+    Ok(ptr)
+}
+
+fn create_invalid_argument_ptr<T>(
+    create: impl FnOnce(*mut *mut T) -> i32,
+    failure_detail: impl FnOnce(i32) -> String,
+) -> Result<*mut T> {
+    create_ffi_ptr(create, failure_detail, |detail| BlpError::InvalidArgument {
+        detail,
+    })
+}
+
+fn create_internal_ptr<T>(
+    create: impl FnOnce(*mut *mut T) -> i32,
+    failure_detail: impl FnOnce(i32) -> String,
+) -> Result<*mut T> {
+    create_ffi_ptr(create, failure_detail, |detail| BlpError::Internal {
+        detail,
+    })
+}
+
+fn destroy_ffi_ptr<T>(ptr: &mut *mut T, destroy: unsafe extern "C" fn(*mut T)) {
+    if !ptr.is_null() {
+        unsafe { destroy(*ptr) };
+        *ptr = std::ptr::null_mut();
     }
 }
 
@@ -83,46 +119,37 @@ unsafe impl Sync for AuthUser {}
 
 impl AuthUser {
     pub fn with_logon_name() -> Result<Self> {
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthUser_createWithLogonName(&mut ptr) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("failed to create AuthUser(OS_LOGON): rc={rc}"),
-            });
-        }
+        let ptr = create_invalid_argument_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthUser_createWithLogonName(ptr) },
+            |rc| format!("failed to create AuthUser(OS_LOGON): rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
     pub fn with_active_directory_property(property_name: &str) -> Result<Self> {
         let property_name = cstring(property_name, "Active Directory property")?;
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe {
-            ffi::blpapi_AuthUser_createWithActiveDirectoryProperty(&mut ptr, property_name.as_ptr())
-        };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("failed to create AuthUser(DIRECTORY_SERVICE): rc={rc}"),
-            });
-        }
+        let ptr = create_invalid_argument_ptr(
+            |ptr| unsafe {
+                ffi::blpapi_AuthUser_createWithActiveDirectoryProperty(ptr, property_name.as_ptr())
+            },
+            |rc| format!("failed to create AuthUser(DIRECTORY_SERVICE): rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
     pub fn with_manual_options(user_id: &str, ip_address: &str) -> Result<Self> {
         let user_id = cstring(user_id, "manual user_id")?;
         let ip_address = cstring(ip_address, "manual ip_address")?;
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe {
-            ffi::blpapi_AuthUser_createWithManualOptions(
-                &mut ptr,
-                user_id.as_ptr(),
-                ip_address.as_ptr(),
-            )
-        };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("failed to create AuthUser(manual): rc={rc}"),
-            });
-        }
+        let ptr = create_invalid_argument_ptr(
+            |ptr| unsafe {
+                ffi::blpapi_AuthUser_createWithManualOptions(
+                    ptr,
+                    user_id.as_ptr(),
+                    ip_address.as_ptr(),
+                )
+            },
+            |rc| format!("failed to create AuthUser(manual): rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
@@ -133,10 +160,7 @@ impl AuthUser {
 
 impl Drop for AuthUser {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe { ffi::blpapi_AuthUser_destroy(self.ptr) };
-            self.ptr = std::ptr::null_mut();
-        }
+        destroy_ffi_ptr(&mut self.ptr, ffi::blpapi_AuthUser_destroy);
     }
 }
 
@@ -150,13 +174,10 @@ unsafe impl Sync for AuthApplication {}
 impl AuthApplication {
     pub fn new(app_name: &str) -> Result<Self> {
         let app_name = cstring(app_name, "application name")?;
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthApplication_create(&mut ptr, app_name.as_ptr()) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("failed to create AuthApplication: rc={rc}"),
-            });
-        }
+        let ptr = create_invalid_argument_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthApplication_create(ptr, app_name.as_ptr()) },
+            |rc| format!("failed to create AuthApplication: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
@@ -167,10 +188,7 @@ impl AuthApplication {
 
 impl Drop for AuthApplication {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe { ffi::blpapi_AuthApplication_destroy(self.ptr) };
-            self.ptr = std::ptr::null_mut();
-        }
+        destroy_ffi_ptr(&mut self.ptr, ffi::blpapi_AuthApplication_destroy);
     }
 }
 
@@ -184,13 +202,10 @@ unsafe impl Sync for AuthToken {}
 impl AuthToken {
     pub fn new(token: &str) -> Result<Self> {
         let token = cstring(token, "token")?;
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthToken_create(&mut ptr, token.as_ptr()) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::InvalidArgument {
-                detail: format!("failed to create AuthToken: rc={rc}"),
-            });
-        }
+        let ptr = create_invalid_argument_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthToken_create(ptr, token.as_ptr()) },
+            |rc| format!("failed to create AuthToken: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
@@ -201,10 +216,7 @@ impl AuthToken {
 
 impl Drop for AuthToken {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe { ffi::blpapi_AuthToken_destroy(self.ptr) };
-            self.ptr = std::ptr::null_mut();
-        }
+        destroy_ffi_ptr(&mut self.ptr, ffi::blpapi_AuthToken_destroy);
     }
 }
 
@@ -217,59 +229,44 @@ unsafe impl Sync for AuthOptions {}
 
 impl AuthOptions {
     pub fn none() -> Result<Self> {
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthOptions_create_default(&mut ptr) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::Internal {
-                detail: format!("failed to create default AuthOptions: rc={rc}"),
-            });
-        }
+        let ptr = create_internal_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthOptions_create_default(ptr) },
+            |rc| format!("failed to create default AuthOptions: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
     pub fn for_user(user: &AuthUser) -> Result<Self> {
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthOptions_create_forUserMode(&mut ptr, user.as_ptr()) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::Internal {
-                detail: format!("failed to create user AuthOptions: rc={rc}"),
-            });
-        }
+        let ptr = create_internal_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthOptions_create_forUserMode(ptr, user.as_ptr()) },
+            |rc| format!("failed to create user AuthOptions: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
     pub fn for_app(app: &AuthApplication) -> Result<Self> {
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthOptions_create_forAppMode(&mut ptr, app.as_ptr()) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::Internal {
-                detail: format!("failed to create app AuthOptions: rc={rc}"),
-            });
-        }
+        let ptr = create_internal_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthOptions_create_forAppMode(ptr, app.as_ptr()) },
+            |rc| format!("failed to create app AuthOptions: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
     pub fn for_user_and_app(user: &AuthUser, app: &AuthApplication) -> Result<Self> {
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe {
-            ffi::blpapi_AuthOptions_create_forUserAndAppMode(&mut ptr, user.as_ptr(), app.as_ptr())
-        };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::Internal {
-                detail: format!("failed to create user+app AuthOptions: rc={rc}"),
-            });
-        }
+        let ptr = create_internal_ptr(
+            |ptr| unsafe {
+                ffi::blpapi_AuthOptions_create_forUserAndAppMode(ptr, user.as_ptr(), app.as_ptr())
+            },
+            |rc| format!("failed to create user+app AuthOptions: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
     pub fn for_token(token: &AuthToken) -> Result<Self> {
-        let mut ptr = std::ptr::null_mut();
-        let rc = unsafe { ffi::blpapi_AuthOptions_create_forToken(&mut ptr, token.as_ptr()) };
-        if rc != 0 || ptr.is_null() {
-            return Err(BlpError::Internal {
-                detail: format!("failed to create token AuthOptions: rc={rc}"),
-            });
-        }
+        let ptr = create_internal_ptr(
+            |ptr| unsafe { ffi::blpapi_AuthOptions_create_forToken(ptr, token.as_ptr()) },
+            |rc| format!("failed to create token AuthOptions: rc={rc}"),
+        )?;
         Ok(Self { ptr })
     }
 
@@ -280,10 +277,7 @@ impl AuthOptions {
 
 impl Drop for AuthOptions {
     fn drop(&mut self) {
-        if !self.ptr.is_null() {
-            unsafe { ffi::blpapi_AuthOptions_destroy(self.ptr) };
-            self.ptr = std::ptr::null_mut();
-        }
+        destroy_ffi_ptr(&mut self.ptr, ffi::blpapi_AuthOptions_destroy);
     }
 }
 
@@ -291,6 +285,14 @@ fn cstring(value: &str, field: &str) -> Result<CString> {
     CString::new(value).map_err(|e| BlpError::InvalidArgument {
         detail: format!("invalid {field}: {e}"),
     })
+}
+
+fn build_user_auth_options(user: AuthUser) -> Result<AuthOptions> {
+    AuthOptions::for_user(&user)
+}
+
+fn build_user_and_app_auth_options(user: AuthUser, app: AuthApplication) -> Result<AuthOptions> {
+    AuthOptions::for_user_and_app(&user, &app)
 }
 
 pub fn apply_session_identity_options(
@@ -345,5 +347,30 @@ mod tests {
             .method_name(),
             "token"
         );
+    }
+
+    #[test]
+    fn cstring_rejects_embedded_nul_with_field_context() {
+        let err = cstring("a\0b", "token").unwrap_err();
+        assert!(matches!(
+            err,
+            BlpError::InvalidArgument { detail }
+                if detail.contains("invalid token") && detail.contains("nul byte")
+        ));
+    }
+
+    #[test]
+    fn create_ffi_ptr_returns_error_when_create_fails() {
+        let err = create_invalid_argument_ptr::<u8>(
+            |slot| {
+                unsafe {
+                    *slot = std::ptr::null_mut();
+                }
+                1
+            },
+            |_| "boom".to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, BlpError::InvalidArgument { detail } if detail == "boom"));
     }
 }

@@ -83,6 +83,80 @@ impl<'a> Element<'a> {
         }
     }
 
+    #[inline(always)]
+    fn read_value<T>(mut fill: impl FnMut(*mut T) -> i32) -> Option<T> {
+        let mut out = MaybeUninit::uninit();
+        (fill(out.as_mut_ptr()) == 0).then(|| unsafe { out.assume_init() })
+    }
+
+    #[inline(always)]
+    fn read_cstr_ptr(&self, i: usize) -> Option<*const i8> {
+        let mut ptr = MaybeUninit::<*const i8>::uninit();
+        let rc = unsafe { ffi::blpapi_Element_getValueAsString(self.ptr, ptr.as_mut_ptr(), i) };
+        if rc != 0 {
+            return None;
+        }
+
+        let ptr = unsafe { ptr.assume_init() };
+        (!ptr.is_null()).then_some(ptr)
+    }
+
+    #[inline(always)]
+    fn date32_from_datetime(dt: HighPrecisionDatetime) -> i32 {
+        (dt.to_micros() / 86_400_000_000) as i32
+    }
+
+    #[inline(always)]
+    fn value_from_datetime(dt: HighPrecisionDatetime) -> crate::Value<'a> {
+        use crate::Value;
+
+        if dt.has_date_parts() {
+            Value::TimestampMicros(dt.to_micros())
+        } else {
+            Value::Time64Micros(dt.to_time_micros())
+        }
+    }
+
+    #[inline(always)]
+    fn value_from_datatype(&self, i: usize, datatype: DataType) -> Option<crate::Value<'a>> {
+        use crate::Value;
+
+        match datatype {
+            DataType::Bool => self.get_bool(i).map(Value::Bool),
+            DataType::Char | DataType::Byte => {
+                // Bloomberg often stores boolean fields as Char ('Y'/'N').
+                // Try get_bool() first - Bloomberg's API coerces 'Y'/'N' to true/false.
+                if let Some(b) = self.get_bool(i) {
+                    return Some(Value::Bool(b));
+                }
+                // Fall back to byte if get_bool() fails
+                self.get_i32(i).map(|v| Value::Byte(v as u8))
+            }
+            DataType::Int32 => self.get_i32(i).map(Value::Int32),
+            DataType::Int64 => self.get_i64(i).map(Value::Int64),
+            DataType::Float32 | DataType::Float64 | DataType::Decimal => {
+                self.get_f64(i).map(Value::Float64)
+            }
+            DataType::String => self.get_str(i).map(Value::String),
+            DataType::Date => self
+                .get_datetime(i)
+                .map(Self::date32_from_datetime)
+                .map(Value::Date32),
+            DataType::Time => self
+                .get_datetime(i)
+                .map(|dt| Value::Time64Micros(dt.to_time_micros())),
+            DataType::Datetime => self.get_datetime(i).map(Self::value_from_datetime),
+            DataType::Enumeration => self.get_str(i).map(Value::Enum),
+            DataType::Sequence
+            | DataType::Choice
+            | DataType::ByteArray
+            | DataType::CorrelationId => {
+                // Complex or non-primitive types - return null, caller should handle nested access
+                Some(Value::Null)
+            }
+        }
+    }
+
     /// Get child by name. Single call = existence check + retrieval.
     ///
     /// This is the optimal Bloomberg pattern: no separate `hasElement` call.
@@ -91,18 +165,13 @@ impl<'a> Element<'a> {
     /// Target: < 100ns per call.
     #[inline(always)]
     pub fn get(&self, name: &Name) -> Option<Element<'a>> {
-        let mut out = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getElement writes a valid pointer on success (rc==0).
-        // MaybeUninit avoids zero-initialization overhead.
-        let rc = unsafe {
-            ffi::blpapi_Element_getElement(
-                self.ptr,
-                out.as_mut_ptr(),
-                std::ptr::null(),
-                name.as_ptr(),
-            )
-        };
-        (rc == 0).then(|| Element::new(unsafe { out.assume_init() }))
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getElement writes a valid pointer on success (rc==0).
+            unsafe {
+                ffi::blpapi_Element_getElement(self.ptr, out, std::ptr::null(), name.as_ptr())
+            }
+        })
+        .map(Element::new)
     }
 
     /// Get child by string name (convenience method, NOT for hot paths).
@@ -138,10 +207,11 @@ impl<'a> Element<'a> {
     /// Use for iterating through arrays or sequences.
     #[inline(always)]
     pub fn get_at(&self, i: usize) -> Option<Element<'a>> {
-        let mut out = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getElementAt writes a valid pointer on success (rc==0).
-        let rc = unsafe { ffi::blpapi_Element_getElementAt(self.ptr, out.as_mut_ptr(), i) };
-        (rc == 0).then(|| Element::new(unsafe { out.assume_init() }))
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getElementAt writes a valid pointer on success (rc==0).
+            unsafe { ffi::blpapi_Element_getElementAt(self.ptr, out, i) }
+        })
+        .map(Element::new)
     }
 
     /// Get child by index without bounds checking.
@@ -229,11 +299,10 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_f64(&self, i: usize) -> Option<f64> {
-        let mut v = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getValueAsFloat64 writes to the pointer on success.
-        // MaybeUninit avoids zero-init overhead.
-        let rc = unsafe { ffi::blpapi_Element_getValueAsFloat64(self.ptr, v.as_mut_ptr(), i) };
-        (rc == 0).then(|| unsafe { v.assume_init() })
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getValueAsFloat64 writes to the pointer on success.
+            unsafe { ffi::blpapi_Element_getValueAsFloat64(self.ptr, out, i) }
+        })
     }
 
     /// Get int64 value at index.
@@ -242,10 +311,10 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_i64(&self, i: usize) -> Option<i64> {
-        let mut v = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getValueAsInt64 writes to the pointer on success.
-        let rc = unsafe { ffi::blpapi_Element_getValueAsInt64(self.ptr, v.as_mut_ptr(), i) };
-        (rc == 0).then(|| unsafe { v.assume_init() })
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getValueAsInt64 writes to the pointer on success.
+            unsafe { ffi::blpapi_Element_getValueAsInt64(self.ptr, out, i) }
+        })
     }
 
     /// Get int32 value at index.
@@ -254,10 +323,10 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_i32(&self, i: usize) -> Option<i32> {
-        let mut v = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getValueAsInt32 writes to the pointer on success.
-        let rc = unsafe { ffi::blpapi_Element_getValueAsInt32(self.ptr, v.as_mut_ptr(), i) };
-        (rc == 0).then(|| unsafe { v.assume_init() })
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getValueAsInt32 writes to the pointer on success.
+            unsafe { ffi::blpapi_Element_getValueAsInt32(self.ptr, out, i) }
+        })
     }
 
     /// Get bool value at index.
@@ -266,11 +335,12 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_bool(&self, i: usize) -> Option<bool> {
-        let mut v = MaybeUninit::<i32>::uninit();
-        // SAFETY: blpapi_Element_getValueAsBool writes to the pointer on success.
-        // Bloomberg returns 0 for false, non-zero for true.
-        let rc = unsafe { ffi::blpapi_Element_getValueAsBool(self.ptr, v.as_mut_ptr(), i) };
-        (rc == 0).then(|| unsafe { v.assume_init() != 0 })
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getValueAsBool writes to the pointer on success.
+            // Bloomberg returns 0 for false, non-zero for true.
+            unsafe { ffi::blpapi_Element_getValueAsBool(self.ptr, out, i) }
+        })
+        .map(|v| v != 0)
     }
 
     /// Get string value at index. Returns reference to Bloomberg's internal buffer.
@@ -284,21 +354,10 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_str(&self, i: usize) -> Option<&'a str> {
-        let mut ptr = MaybeUninit::<*const i8>::uninit();
-        // SAFETY: blpapi_Element_getValueAsString writes a C string pointer on success.
-        // The string is valid for the lifetime of the message/event.
-        let rc = unsafe { ffi::blpapi_Element_getValueAsString(self.ptr, ptr.as_mut_ptr(), i) };
-        if rc == 0 {
-            let ptr = unsafe { ptr.assume_init() };
-            if ptr.is_null() {
-                return None;
-            }
-            // SAFETY: Bloomberg guarantees null-terminated strings.
-            // Use checked UTF-8 conversion in case of legacy encodings.
-            unsafe { CStr::from_ptr(ptr) }.to_str().ok()
-        } else {
-            None
-        }
+        let ptr = self.read_cstr_ptr(i)?;
+        // SAFETY: Bloomberg guarantees null-terminated strings.
+        // Use checked UTF-8 conversion in case of legacy encodings.
+        unsafe { CStr::from_ptr(ptr) }.to_str().ok()
     }
 
     /// Get string as CStr (no UTF-8 validation).
@@ -313,18 +372,9 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_cstr(&self, i: usize) -> Option<&'a CStr> {
-        let mut ptr = MaybeUninit::<*const i8>::uninit();
-        let rc = unsafe { ffi::blpapi_Element_getValueAsString(self.ptr, ptr.as_mut_ptr(), i) };
-        if rc == 0 {
-            let ptr = unsafe { ptr.assume_init() };
-            if ptr.is_null() {
-                return None;
-            }
-            // SAFETY: Bloomberg guarantees null-terminated strings.
-            Some(unsafe { CStr::from_ptr(ptr) })
-        } else {
-            None
-        }
+        let ptr = self.read_cstr_ptr(i)?;
+        // SAFETY: Bloomberg guarantees null-terminated strings.
+        Some(unsafe { CStr::from_ptr(ptr) })
     }
 
     /// Get string value without UTF-8 validation.
@@ -339,19 +389,10 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub unsafe fn get_str_unchecked(&self, i: usize) -> Option<&'a str> {
-        let mut ptr = MaybeUninit::<*const i8>::uninit();
-        let rc = ffi::blpapi_Element_getValueAsString(self.ptr, ptr.as_mut_ptr(), i);
-        if rc == 0 {
-            let ptr = ptr.assume_init();
-            if ptr.is_null() {
-                return None;
-            }
-            // SAFETY: Caller guarantees valid UTF-8. Bloomberg strings are null-terminated.
-            let cstr = CStr::from_ptr(ptr);
-            Some(std::str::from_utf8_unchecked(cstr.to_bytes()))
-        } else {
-            None
-        }
+        let ptr = self.read_cstr_ptr(i)?;
+        // SAFETY: Caller guarantees valid UTF-8. Bloomberg strings are null-terminated.
+        let cstr = CStr::from_ptr(ptr);
+        Some(std::str::from_utf8_unchecked(cstr.to_bytes()))
     }
 
     /// Get datetime value at index.
@@ -363,12 +404,11 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_datetime(&self, i: usize) -> Option<HighPrecisionDatetime> {
-        let mut v = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getValueAsHighPrecisionDatetime writes the datetime struct on success.
-        let rc = unsafe {
-            ffi::blpapi_Element_getValueAsHighPrecisionDatetime(self.ptr, v.as_mut_ptr(), i)
-        };
-        (rc == 0).then(|| HighPrecisionDatetime(unsafe { v.assume_init() }))
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getValueAsHighPrecisionDatetime writes the datetime struct on success.
+            unsafe { ffi::blpapi_Element_getValueAsHighPrecisionDatetime(self.ptr, out, i) }
+        })
+        .map(HighPrecisionDatetime)
     }
 
     /// Get datetime as microseconds since Unix epoch.
@@ -387,10 +427,11 @@ impl<'a> Element<'a> {
     /// Returns `None` if null, type mismatch, or out of bounds.
     #[inline(always)]
     pub fn get_element(&self, i: usize) -> Option<Element<'a>> {
-        let mut out = MaybeUninit::uninit();
-        // SAFETY: blpapi_Element_getValueAsElement writes a valid pointer on success.
-        let rc = unsafe { ffi::blpapi_Element_getValueAsElement(self.ptr, out.as_mut_ptr(), i) };
-        (rc == 0).then(|| Element::new(unsafe { out.assume_init() }))
+        Self::read_value(|out| {
+            // SAFETY: blpapi_Element_getValueAsElement writes a valid pointer on success.
+            unsafe { ffi::blpapi_Element_getValueAsElement(self.ptr, out, i) }
+        })
+        .map(Element::new)
     }
 
     /// Get element at index without bounds checking.
@@ -486,11 +527,9 @@ impl<'a> Element<'a> {
     /// ```
     #[inline]
     pub fn get_value(&self, i: usize) -> Option<crate::Value<'a>> {
-        use crate::{DataType, Value};
-
         // Check null first
         if self.is_null() {
-            return Some(Value::Null);
+            return Some(crate::Value::Null);
         }
 
         // Check bounds
@@ -498,62 +537,7 @@ impl<'a> Element<'a> {
             return None;
         }
 
-        // Dispatch based on datatype
-        match self.datatype() {
-            DataType::Bool => self.get_bool(i).map(Value::Bool),
-            DataType::Char | DataType::Byte => {
-                // Bloomberg often stores boolean fields as Char ('Y'/'N').
-                // Try get_bool() first - Bloomberg's API coerces 'Y'/'N' to true/false.
-                if let Some(b) = self.get_bool(i) {
-                    return Some(Value::Bool(b));
-                }
-                // Fall back to byte if get_bool() fails
-                self.get_i32(i).map(|v| Value::Byte(v as u8))
-            }
-            DataType::Int32 => self.get_i32(i).map(Value::Int32),
-            DataType::Int64 => self.get_i64(i).map(Value::Int64),
-            DataType::Float32 | DataType::Float64 | DataType::Decimal => {
-                self.get_f64(i).map(Value::Float64)
-            }
-            DataType::String => self.get_str(i).map(Value::String),
-            DataType::Date => {
-                // Extract as datetime, convert to days since epoch
-                self.get_datetime(i).map(|dt| {
-                    let micros = dt.to_micros();
-                    let days = (micros / 86_400_000_000) as i32;
-                    Value::Date32(days)
-                })
-            }
-            DataType::Time => {
-                // Time-only: extract just hours/minutes/seconds as microseconds from midnight.
-                // Bloomberg Time fields have zeroed date parts — using to_micros() would
-                // produce garbage timestamps anchored to year 0.
-                self.get_datetime(i)
-                    .map(|dt| Value::Time64Micros(dt.to_time_micros()))
-            }
-            DataType::Datetime => self.get_datetime(i).map(|dt| {
-                // Some Bloomberg Datetime fields (e.g. LAST_UPDATE_BID_RT, RT_TIME_OF_TRADE)
-                // have zeroed date parts in certain messages. Check the parts bitmask to
-                // avoid producing garbage timestamps anchored to year 0.
-                if dt.has_date_parts() {
-                    Value::TimestampMicros(dt.to_micros())
-                } else {
-                    Value::Time64Micros(dt.to_time_micros())
-                }
-            }),
-            DataType::Enumeration => {
-                // Enums are stored as strings in Bloomberg
-                self.get_str(i).map(Value::Enum)
-            }
-            DataType::Sequence | DataType::Choice => {
-                // Complex types - return null, caller should iterate children
-                Some(Value::Null)
-            }
-            DataType::ByteArray | DataType::CorrelationId => {
-                // Not commonly used, return null
-                Some(Value::Null)
-            }
-        }
+        self.value_from_datatype(i, self.datatype())
     }
 
     /// Fast value extraction - skips null and bounds checks.
@@ -572,44 +556,8 @@ impl<'a> Element<'a> {
     /// ~2 fewer FFI calls per extraction compared to `get_value()`.
     #[inline(always)]
     pub fn get_value_fast(&self, i: usize) -> Option<crate::Value<'a>> {
-        use crate::{DataType, Value};
-
         // Single datatype() call + one typed getter (no is_null/len checks)
-        match self.datatype() {
-            DataType::Bool => self.get_bool(i).map(Value::Bool),
-            DataType::Char | DataType::Byte => {
-                // Bloomberg often stores boolean fields as Char ('Y'/'N').
-                if let Some(b) = self.get_bool(i) {
-                    return Some(Value::Bool(b));
-                }
-                self.get_i32(i).map(|v| Value::Byte(v as u8))
-            }
-            DataType::Int32 => self.get_i32(i).map(Value::Int32),
-            DataType::Int64 => self.get_i64(i).map(Value::Int64),
-            DataType::Float32 | DataType::Float64 | DataType::Decimal => {
-                self.get_f64(i).map(Value::Float64)
-            }
-            DataType::String => self.get_str(i).map(Value::String),
-            DataType::Date => self.get_datetime(i).map(|dt| {
-                let micros = dt.to_micros();
-                Value::Date32((micros / 86_400_000_000) as i32)
-            }),
-            DataType::Time => self
-                .get_datetime(i)
-                .map(|dt| Value::Time64Micros(dt.to_time_micros())),
-            DataType::Datetime => self.get_datetime(i).map(|dt| {
-                if dt.has_date_parts() {
-                    Value::TimestampMicros(dt.to_micros())
-                } else {
-                    Value::Time64Micros(dt.to_time_micros())
-                }
-            }),
-            DataType::Enumeration => self.get_str(i).map(Value::Enum),
-            DataType::Sequence
-            | DataType::Choice
-            | DataType::ByteArray
-            | DataType::CorrelationId => Some(Value::Null),
-        }
+        self.value_from_datatype(i, self.datatype())
     }
 
     /// Get date value as days since Unix epoch (for Arrow Date32).
@@ -621,10 +569,82 @@ impl<'a> Element<'a> {
     #[must_use]
     #[inline(always)]
     pub fn get_date32(&self, i: usize) -> Option<i32> {
-        self.get_datetime(i).map(|dt| {
-            let micros = dt.to_micros();
-            (micros / 86_400_000_000) as i32
+        self.get_datetime(i).map(Self::date32_from_datetime)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ffi, Value};
+
+    fn make_datetime(
+        parts: u8,
+        year: u16,
+        month: u8,
+        day: u8,
+        hours: u8,
+        minutes: u8,
+        seconds: u8,
+        milliseconds: u16,
+    ) -> HighPrecisionDatetime {
+        HighPrecisionDatetime::from_raw(ffi::blpapi_HighPrecisionDatetime_t {
+            parts,
+            hours,
+            minutes,
+            seconds,
+            milliseconds,
+            month,
+            day,
+            year,
+            offset: 0,
+            picoseconds: 0,
         })
+    }
+
+    #[test]
+    fn date32_from_datetime_uses_epoch_day_count() {
+        let dt = make_datetime(
+            ffi::BLPAPI_DATETIME_DATE_PART | ffi::BLPAPI_DATETIME_TIME_PART,
+            1970,
+            1,
+            2,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        assert_eq!(Element::date32_from_datetime(dt), 1);
+    }
+
+    #[test]
+    fn value_from_datetime_prefers_timestamp_when_date_parts_exist() {
+        let dt = make_datetime(
+            ffi::BLPAPI_DATETIME_DATE_PART | ffi::BLPAPI_DATETIME_TIME_PART,
+            2024,
+            6,
+            15,
+            14,
+            30,
+            45,
+            123,
+        );
+
+        match Element::value_from_datetime(dt) {
+            Value::TimestampMicros(v) => assert_eq!(v, 1_718_461_845_123_000),
+            other => panic!("expected TimestampMicros, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_from_datetime_falls_back_to_time_when_date_parts_are_missing() {
+        let dt = make_datetime(ffi::BLPAPI_DATETIME_TIME_PART, 0, 0, 0, 14, 30, 45, 123);
+
+        match Element::value_from_datetime(dt) {
+            Value::Time64Micros(v) => assert_eq!(v, dt.to_time_micros()),
+            other => panic!("expected Time64Micros, got {other:?}"),
+        }
     }
 }
 

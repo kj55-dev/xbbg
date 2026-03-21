@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 import contextvars
 import logging
 import time
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import narwhals.stable.v1 as nw
 from narwhals.typing import IntoFrame
@@ -132,22 +132,75 @@ __all__ = list(BLP_MODULE_EXPORTS)
 
 # Generated sync wrappers are installed dynamically by _install_generated_endpoints().
 # Define placeholders so static analysis recognizes these exported names.
-(
-    bdp,
-    bdh,
-    bds,
-    bdib,
-    bdtick,
-    bql,
-    bsrch,
-    bqr,
-    bflds,
-    beqs,
-    blkp,
-    bport,
-    bcurves,
-    bgovts,
-) = (None,) * 14
+if TYPE_CHECKING:
+
+    def request(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def subscribe(*args: Any, **kwargs: Any) -> Any: ...
+
+    def vwap(*args: Any, **kwargs: Any) -> Any: ...
+
+    def mktbar(*args: Any, **kwargs: Any) -> Any: ...
+
+    def depth(*args: Any, **kwargs: Any) -> Any: ...
+
+    def chains(*args: Any, **kwargs: Any) -> Any: ...
+
+    def bta(*args: Any, **kwargs: Any) -> Any: ...
+
+    def fieldInfo(*args: Any, **kwargs: Any) -> Any: ...
+
+    def fieldSearch(*args: Any, **kwargs: Any) -> Any: ...
+
+    def bops(*args: Any, **kwargs: Any) -> Any: ...
+
+    def bschema(*args: Any, **kwargs: Any) -> Any: ...
+
+    def bdp(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bdh(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bds(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bdib(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bdtick(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bql(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bsrch(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bqr(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bflds(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def beqs(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def blkp(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bport(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bcurves(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+    def bgovts(*args: Any, **kwargs: Any) -> DataFrameResult: ...
+
+else:
+    (
+        bdp,
+        bdh,
+        bds,
+        bdib,
+        bdtick,
+        bql,
+        bsrch,
+        bqr,
+        bflds,
+        beqs,
+        blkp,
+        bport,
+        bcurves,
+        bgovts,
+    ) = (None,) * 14
 
 
 # Engine configuration (set before first use)

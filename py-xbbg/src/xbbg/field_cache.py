@@ -68,6 +68,15 @@ def resolve_field_types(
     return _run_sync(aresolve_field_types(fields, overrides))
 
 
+async def _resolve_types(fields: Sequence[str], overrides: dict[str, str] | None) -> dict[str, str]:
+    """Resolve field types through the shared Rust cache with xbbg defaults."""
+    return await _get_engine().resolve_field_types(
+        list(fields),
+        overrides or None,
+        "string",
+    )
+
+
 async def aresolve_field_types(
     fields: Sequence[str],
     overrides: dict[str, str] | None = None,
@@ -83,12 +92,7 @@ async def aresolve_field_types(
     Returns:
         Dict mapping field names to Arrow type strings.
     """
-    engine = _get_engine()
-    return await engine.resolve_field_types(
-        list(fields),
-        overrides if overrides else None,
-        "string",
-    )
+    return await _resolve_types(fields, overrides)
 
 
 async def cache_field_types(fields: Sequence[str]) -> None:
@@ -97,8 +101,7 @@ async def cache_field_types(fields: Sequence[str]) -> None:
     Args:
         fields: List of field mnemonics to cache.
     """
-    engine = _get_engine()
-    await engine.resolve_field_types(list(fields), None, "string")
+    await _resolve_types(fields, None)
 
 
 async def get_field_info(fields: Sequence[str]) -> list[FieldInfo]:
@@ -171,8 +174,9 @@ class FieldTypeCache:
         types = cache.resolve_types(["PX_LAST", "NAME", "VOLUME"])
     """
 
-    def __init__(self, cache_path: str | None = None):
-        pass
+    def __init__(self, cache_path: str | None = None) -> None:
+        """Accept legacy cache_path for API compatibility without using it."""
+        del cache_path
 
     def resolve_types(
         self,

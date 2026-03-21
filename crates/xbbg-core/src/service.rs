@@ -1,8 +1,9 @@
 //! Bloomberg service handle
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use crate::errors::{BlpError, Result};
+use crate::ffi;
 use crate::request::Request;
 use crate::schema::Operation;
 
@@ -22,7 +23,7 @@ use crate::schema::Operation;
 /// let req = svc.create_request("ReferenceDataRequest")?;
 /// ```
 pub struct Service {
-    ptr: *mut crate::ffi::blpapi_Service_t,
+    ptr: *mut ffi::blpapi_Service_t,
 }
 
 // SAFETY: Service can be sent between threads
@@ -33,9 +34,19 @@ unsafe impl Send for Service {}
 // Service is immutable after get_service() and can be safely accessed concurrently
 unsafe impl Sync for Service {}
 
+fn cstring_arg(label: &'static str, value: &str) -> Result<CString> {
+    CString::new(value).map_err(|e| BlpError::InvalidArgument {
+        detail: format!("invalid {label}: {e}"),
+    })
+}
+
+fn cstr_to_str_or_empty(c_str: &CStr) -> &str {
+    c_str.to_str().unwrap_or("")
+}
+
 impl Service {
     /// Create a Service from a raw pointer (internal use only)
-    pub(crate) fn from_raw(ptr: *mut crate::ffi::blpapi_Service_t) -> Result<Self> {
+    pub(crate) fn from_raw(ptr: *mut ffi::blpapi_Service_t) -> Result<Self> {
         if ptr.is_null() {
             return Err(BlpError::Internal {
                 detail: "null service pointer".into(),
@@ -46,7 +57,7 @@ impl Service {
 
     /// Get the raw pointer (internal use only)
     #[allow(dead_code)] // Used in integration, not unit tests
-    pub(crate) fn as_ptr(&self) -> *mut crate::ffi::blpapi_Service_t {
+    pub(crate) fn as_ptr(&self) -> *mut ffi::blpapi_Service_t {
         self.ptr
     }
 
@@ -63,18 +74,16 @@ impl Service {
     /// # Returns
     /// A new Request object that can be populated and sent
     pub fn create_request(&self, operation: &str) -> Result<Request> {
-        let c_operation = CString::new(operation).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid operation name: {}", e),
-        })?;
+        let c_operation = cstring_arg("operation name", operation)?;
 
-        let mut req_ptr: *mut crate::ffi::blpapi_Request_t = std::ptr::null_mut();
+        let mut req_ptr: *mut ffi::blpapi_Request_t = std::ptr::null_mut();
 
         // SAFETY: We're calling the Bloomberg API with valid pointers
         // - self.ptr is guaranteed non-null by from_raw()
         // - req_ptr is a valid mutable pointer
         // - c_operation is a valid C string
         let rc = unsafe {
-            crate::ffi::blpapi_Service_createRequest(self.ptr, &mut req_ptr, c_operation.as_ptr())
+            ffi::blpapi_Service_createRequest(self.ptr, &mut req_ptr, c_operation.as_ptr())
         };
 
         if rc != 0 {
@@ -93,28 +102,25 @@ impl Service {
     /// # Returns
     /// The service name as a string slice
     pub fn name(&self) -> &str {
-        // SAFETY: We're calling the Bloomberg API with a valid pointer
-        // The returned pointer is valid for the lifetime of the Service
-        unsafe {
-            let name_ptr = crate::ffi::blpapi_Service_name(self.ptr);
-            if name_ptr.is_null() {
-                return "";
-            }
-
-            // Convert C string to Rust string
-            let c_str = std::ffi::CStr::from_ptr(name_ptr);
-            c_str.to_str().unwrap_or("")
+        // SAFETY: We're calling the Bloomberg API with a valid pointer.
+        // The returned pointer is valid for the lifetime of the Service.
+        let name_ptr = unsafe { ffi::blpapi_Service_name(self.ptr) };
+        if name_ptr.is_null() {
+            ""
+        } else {
+            // SAFETY: The Bloomberg API returned a non-null C string pointer.
+            cstr_to_str_or_empty(unsafe { CStr::from_ptr(name_ptr) })
         }
     }
 
     /// Get a human-readable description of this service.
     pub fn description(&self) -> &str {
-        unsafe {
-            let desc_ptr = crate::ffi::blpapi_Service_description(self.ptr);
-            if desc_ptr.is_null() {
-                return "";
-            }
-            std::ffi::CStr::from_ptr(desc_ptr).to_str().unwrap_or("")
+        let desc_ptr = unsafe { ffi::blpapi_Service_description(self.ptr) };
+        if desc_ptr.is_null() {
+            ""
+        } else {
+            // SAFETY: The Bloomberg API returned a non-null C string pointer.
+            cstr_to_str_or_empty(unsafe { CStr::from_ptr(desc_ptr) })
         }
     }
 
@@ -122,7 +128,7 @@ impl Service {
     ///
     /// Operations include things like ReferenceDataRequest, HistoricalDataRequest, etc.
     pub fn num_operations(&self) -> usize {
-        let count = unsafe { crate::ffi::blpapi_Service_numOperations(self.ptr) };
+        let count = unsafe { ffi::blpapi_Service_numOperations(self.ptr) };
         count.max(0) as usize
     }
 
@@ -134,19 +140,19 @@ impl Service {
     /// # Returns
     /// The operation at the specified index, or an error if out of bounds.
     pub fn get_operation_at(&self, index: usize) -> Result<Operation> {
-        if index >= self.num_operations() {
+        let num_operations = self.num_operations();
+        if index >= num_operations {
             return Err(BlpError::InvalidArgument {
                 detail: format!(
                     "Operation index {} out of bounds (service has {} operations)",
-                    index,
-                    self.num_operations()
+                    index, num_operations
                 ),
             });
         }
 
-        let mut op_ptr: *mut crate::ffi::blpapi_Operation_t = std::ptr::null_mut();
+        let mut op_ptr: *mut ffi::blpapi_Operation_t = std::ptr::null_mut();
 
-        let rc = unsafe { crate::ffi::blpapi_Service_getOperationAt(self.ptr, &mut op_ptr, index) };
+        let rc = unsafe { ffi::blpapi_Service_getOperationAt(self.ptr, &mut op_ptr, index) };
 
         if rc != 0 || op_ptr.is_null() {
             return Err(BlpError::Internal {
@@ -167,6 +173,45 @@ impl Service {
             index: 0,
             count: self.num_operations(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cstr_to_str_or_empty, cstring_arg};
+    use crate::errors::BlpError;
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    fn cstring_arg_accepts_valid_input() {
+        let cstr = cstring_arg("operation name", "ReferenceDataRequest").unwrap();
+
+        assert_eq!(cstr.to_str().unwrap(), "ReferenceDataRequest");
+    }
+
+    #[test]
+    fn cstring_arg_reports_nul_bytes() {
+        let err = cstring_arg("operation name", "bad\0name").unwrap_err();
+
+        let BlpError::InvalidArgument { detail } = err else {
+            panic!("expected invalid argument error");
+        };
+        assert!(detail.contains("invalid operation name"));
+        assert!(detail.contains("nul byte found in provided data"));
+    }
+
+    #[test]
+    fn cstr_to_str_or_empty_handles_invalid_utf8() {
+        let bytes = [0xff, 0x00];
+        let cstr = CStr::from_bytes_with_nul(&bytes).unwrap();
+        assert_eq!(cstr_to_str_or_empty(cstr), "");
+    }
+
+    #[test]
+    fn cstr_to_str_or_empty_converts_valid_utf8() {
+        let cstr = CString::new("//blp/refdata").unwrap();
+
+        assert_eq!(cstr_to_str_or_empty(cstr.as_c_str()), "//blp/refdata");
     }
 }
 

@@ -114,8 +114,7 @@ impl Engine {
     ///
     /// All request types are handled by the same pool of workers.
     pub async fn request(&self, params: RequestParams) -> Result<RecordBatch, BlpAsyncError> {
-        let params = self.prepare_request_params(params)?;
-        self.maybe_validate_request_fields(&params).await?;
+        let params = self.prepare_request_params_for_dispatch(params).await?;
         self.request_pool.request(params).await
     }
 
@@ -124,9 +123,17 @@ impl Engine {
         &self,
         params: RequestParams,
     ) -> Result<mpsc::Receiver<Result<RecordBatch, BlpError>>, BlpAsyncError> {
+        let params = self.prepare_request_params_for_dispatch(params).await?;
+        self.request_pool.request_stream(params).await
+    }
+
+    async fn prepare_request_params_for_dispatch(
+        &self,
+        params: RequestParams,
+    ) -> Result<RequestParams, BlpAsyncError> {
         let params = self.prepare_request_params(params)?;
         self.maybe_validate_request_fields(&params).await?;
-        self.request_pool.request_stream(params).await
+        Ok(params)
     }
 
     /// Resolve defaults, validate, and schema-route kwargs before dispatch.
@@ -137,7 +144,10 @@ impl Engine {
         let mut params = params.with_defaults();
         params.validate()?;
 
-        let kwargs = params.kwargs.take().unwrap_or_default();
+        let Some(kwargs) = params.kwargs.take() else {
+            return Ok(params);
+        };
+
         if params.is_raw_request() {
             merge_raw_kwargs_into_elements(&mut params, kwargs);
             return Ok(params);
@@ -181,35 +191,14 @@ impl Engine {
         &self,
         params: &RequestParams,
     ) -> Result<(), BlpAsyncError> {
-        let validation_mode = match params.validate_fields {
-            Some(true) => ValidationMode::Strict,
-            Some(false) => ValidationMode::Disabled,
-            None => self.config.validation_mode,
-        };
+        let validation_mode =
+            Self::validation_mode_for_request(params.validate_fields, self.config.validation_mode);
 
-        if validation_mode == ValidationMode::Disabled {
+        if !Self::should_validate_request_fields(params, validation_mode) {
             return Ok(());
         }
 
-        if params.service != Service::RefData.to_string() {
-            return Ok(());
-        }
-
-        let operation = parse_operation_lossless(&params.operation);
-        if !matches!(
-            operation,
-            Operation::ReferenceData | Operation::HistoricalData
-        ) {
-            return Ok(());
-        }
-
-        let Some(fields) = params.fields.as_ref() else {
-            return Ok(());
-        };
-        if fields.is_empty() {
-            return Ok(());
-        }
-
+        let fields = params.fields.as_ref().expect("checked above");
         let invalid_fields = self.validate_fields(fields).await?;
         if invalid_fields.is_empty() {
             return Ok(());
@@ -227,6 +216,33 @@ impl Engine {
         }
 
         Err(BlpAsyncError::ConfigError { detail })
+    }
+
+    fn validation_mode_for_request(
+        validate_fields: Option<bool>,
+        default_mode: ValidationMode,
+    ) -> ValidationMode {
+        match validate_fields {
+            Some(true) => ValidationMode::Strict,
+            Some(false) => ValidationMode::Disabled,
+            None => default_mode,
+        }
+    }
+
+    fn should_validate_request_fields(
+        params: &RequestParams,
+        validation_mode: ValidationMode,
+    ) -> bool {
+        validation_mode != ValidationMode::Disabled
+            && params.service == Service::RefData.as_str()
+            && matches!(
+                parse_operation_lossless(&params.operation),
+                Operation::ReferenceData | Operation::HistoricalData
+            )
+            && params
+                .fields
+                .as_ref()
+                .is_some_and(|fields| !fields.is_empty())
     }
 
     // ─── Subscriptions ───────────────────────────────────────────────────────
@@ -942,6 +958,62 @@ mod tests {
                 ("zeta".to_string(), "9".to_string()),
             ])
         );
+    }
+
+    #[test]
+    fn validation_mode_for_request_prefers_request_override() {
+        assert_eq!(
+            Engine::validation_mode_for_request(Some(true), ValidationMode::Lenient),
+            ValidationMode::Strict
+        );
+        assert_eq!(
+            Engine::validation_mode_for_request(Some(false), ValidationMode::Strict),
+            ValidationMode::Disabled
+        );
+        assert_eq!(
+            Engine::validation_mode_for_request(None, ValidationMode::Lenient),
+            ValidationMode::Lenient
+        );
+    }
+
+    #[test]
+    fn should_validate_request_fields_requires_refdata_operation_and_non_empty_fields() {
+        let params = RequestParams {
+            service: Service::RefData.as_str().to_string(),
+            operation: Operation::ReferenceData.as_str().to_string(),
+            fields: Some(vec!["PX_LAST".to_string()]),
+            ..Default::default()
+        };
+
+        assert!(Engine::should_validate_request_fields(
+            &params,
+            ValidationMode::Strict
+        ));
+        assert!(!Engine::should_validate_request_fields(
+            &params,
+            ValidationMode::Disabled
+        ));
+
+        let mut non_refdata = params.clone();
+        non_refdata.service = Service::MktData.as_str().to_string();
+        assert!(!Engine::should_validate_request_fields(
+            &non_refdata,
+            ValidationMode::Strict
+        ));
+
+        let mut non_supported_operation = params.clone();
+        non_supported_operation.operation = Operation::IntradayBar.as_str().to_string();
+        assert!(!Engine::should_validate_request_fields(
+            &non_supported_operation,
+            ValidationMode::Strict
+        ));
+
+        let mut empty_fields = params;
+        empty_fields.fields = Some(Vec::new());
+        assert!(!Engine::should_validate_request_fields(
+            &empty_fields,
+            ValidationMode::Strict
+        ));
     }
 
     #[test]

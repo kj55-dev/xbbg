@@ -83,40 +83,17 @@ impl SubscriptionList {
             });
         }
 
-        let c_topic = CString::new(topic).map_err(|e| BlpError::InvalidArgument {
-            detail: format!("invalid topic: {}", e),
-        })?;
+        let c_topic = cstring("topic", topic)?;
 
-        // Convert fields to C strings
-        let c_fields: Vec<CString> = fields
-            .iter()
-            .map(|f| {
-                CString::new(*f).map_err(|e| BlpError::InvalidArgument {
-                    detail: format!("invalid field: {}", e),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let c_fields = cstring_vec("field", fields)?;
 
-        // Create array of field pointers
-        let field_ptrs: Vec<*const i8> = c_fields.iter().map(|s| s.as_ptr()).collect();
+        let field_ptrs = ptrs(&c_fields);
 
-        // Parse options string into array
-        let options_vec: Vec<&str> = if options.is_empty() {
-            Vec::new()
-        } else {
-            options.split(',').map(|s| s.trim()).collect()
-        };
+        let options_vec = split_options(options);
 
-        let c_options: Vec<CString> = options_vec
-            .iter()
-            .map(|o| {
-                CString::new(*o).map_err(|e| BlpError::InvalidArgument {
-                    detail: format!("invalid option: {}", e),
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let c_options = cstring_vec("option", &options_vec)?;
 
-        let option_ptrs: Vec<*const i8> = c_options.iter().map(|s| s.as_ptr()).collect();
+        let option_ptrs = ptrs(&c_options);
 
         // Convert correlation ID to FFI format
         let cid_ffi = cid.to_ffi();
@@ -150,6 +127,28 @@ impl SubscriptionList {
     /// Get the raw pointer (internal use only)
     pub(crate) fn as_ptr(&self) -> *mut crate::ffi::blpapi_SubscriptionList_t {
         self.ptr
+    }
+}
+
+fn cstring(label: &str, value: &str) -> Result<CString> {
+    CString::new(value).map_err(|e| BlpError::InvalidArgument {
+        detail: format!("invalid {label}: {e}"),
+    })
+}
+
+fn cstring_vec(label: &str, values: &[&str]) -> Result<Vec<CString>> {
+    values.iter().map(|value| cstring(label, value)).collect()
+}
+
+fn ptrs(values: &[CString]) -> Vec<*const i8> {
+    values.iter().map(|value| value.as_ptr()).collect()
+}
+
+fn split_options(options: &str) -> Vec<&str> {
+    if options.is_empty() {
+        Vec::new()
+    } else {
+        options.split(',').map(|option| option.trim()).collect()
     }
 }
 

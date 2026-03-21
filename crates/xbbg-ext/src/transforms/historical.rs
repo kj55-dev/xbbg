@@ -10,6 +10,38 @@ use arrow::datatypes::{DataType, Field, Schema};
 use crate::constants::{DVD_COLS, ETF_COLS};
 use crate::error::{ExtError, Result};
 
+fn rename_columns(
+    columns: &[&str],
+    mapping: &phf::Map<&'static str, &'static str>,
+) -> Vec<(String, String)> {
+    columns
+        .iter()
+        .filter_map(|col| {
+            mapping
+                .get(*col)
+                .map(|new_name| (col.to_string(), new_name.to_string()))
+        })
+        .collect()
+}
+
+fn apply_group_percentages(
+    percentages: &mut [Option<f64>],
+    values: &[Option<f64>],
+    indices: &[usize],
+) {
+    let group_sum: f64 = indices.iter().filter_map(|&i| values[i]).sum();
+
+    if group_sum == 0.0 {
+        return;
+    }
+
+    for &i in indices {
+        if let Some(val) = values[i] {
+            percentages[i] = Some(100.0 * val / group_sum);
+        }
+    }
+}
+
 /// Rename dividend columns from Bloomberg names to clean names.
 ///
 /// Uses the `DVD_COLS` mapping to transform column names like
@@ -35,28 +67,14 @@ use crate::error::{ExtError, Result};
 /// assert!(renames.iter().any(|(old, new)| old == "Declared Date" && new == "dec_date"));
 /// ```
 pub fn rename_dividend_columns(columns: &[&str]) -> Vec<(String, String)> {
-    columns
-        .iter()
-        .filter_map(|col| {
-            DVD_COLS
-                .get(*col)
-                .map(|new_name| (col.to_string(), new_name.to_string()))
-        })
-        .collect()
+    rename_columns(columns, &DVD_COLS)
 }
 
 /// Rename ETF holdings columns from Bloomberg names to clean names.
 ///
 /// Uses the `ETF_COLS` mapping.
 pub fn rename_etf_columns(columns: &[&str]) -> Vec<(String, String)> {
-    columns
-        .iter()
-        .filter_map(|col| {
-            ETF_COLS
-                .get(*col)
-                .map(|new_name| (col.to_string(), new_name.to_string()))
-        })
-        .collect()
+    rename_columns(columns, &ETF_COLS)
 }
 
 /// Build column rename mapping from earnings header values.
@@ -186,18 +204,7 @@ pub fn calculate_level_percentages(
         .enumerate()
         .filter_map(|(i, lvl)| if *lvl == Some(1) { Some(i) } else { None })
         .collect();
-
-    if !level_1_indices.is_empty() {
-        let level_1_sum: f64 = level_1_indices.iter().filter_map(|&i| values[i]).sum();
-
-        if level_1_sum != 0.0 {
-            for &i in &level_1_indices {
-                if let Some(val) = values[i] {
-                    percentages[i] = Some(100.0 * val / level_1_sum);
-                }
-            }
-        }
-    }
+    apply_group_percentages(&mut percentages, values, &level_1_indices);
 
     // Calculate level 2 percentages (% of parent level 1 group)
     // Iterate backwards to group level 2 rows by their level 1 parent
@@ -210,17 +217,7 @@ pub fn calculate_level_percentages(
             }
             Some(1) => {
                 // Calculate percentage for this level 2 group
-                if !level_2_group.is_empty() {
-                    let group_sum: f64 = level_2_group.iter().filter_map(|&j| values[j]).sum();
-
-                    if group_sum != 0.0 {
-                        for &j in &level_2_group {
-                            if let Some(val) = values[j] {
-                                percentages[j] = Some(100.0 * val / group_sum);
-                            }
-                        }
-                    }
-                }
+                apply_group_percentages(&mut percentages, values, &level_2_group);
                 level_2_group.clear();
             }
             _ => {}

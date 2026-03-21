@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,3 +132,65 @@ def test_fallback_exception_identity_survives_reload(pure_python_modules):
     )
     with pytest.raises(reloaded_exceptions.BlpValidationError):
         params.validate()
+
+
+def test_rebinding_core_exceptions_reapplies_python_compatibility(pure_python_modules):
+    """Synthetic core rebinding should preserve Python-side compatibility helpers."""
+    exceptions, _services, _backend = pure_python_modules
+
+    class FakeBlpError(Exception):
+        pass
+
+    class FakeBlpSessionError(FakeBlpError):
+        pass
+
+    class FakeBlpRequestError(FakeBlpError):
+        pass
+
+    class FakeBlpSecurityError(FakeBlpRequestError):
+        pass
+
+    class FakeBlpFieldError(FakeBlpRequestError):
+        pass
+
+    class FakeBlpValidationError(FakeBlpError):
+        pass
+
+    class FakeBlpTimeoutError(FakeBlpError):
+        pass
+
+    class FakeBlpInternalError(FakeBlpError):
+        pass
+
+    fake_core = SimpleNamespace(
+        BlpError=FakeBlpError,
+        BlpSessionError=FakeBlpSessionError,
+        BlpRequestError=FakeBlpRequestError,
+        BlpSecurityError=FakeBlpSecurityError,
+        BlpFieldError=FakeBlpFieldError,
+        BlpValidationError=FakeBlpValidationError,
+        BlpTimeoutError=FakeBlpTimeoutError,
+        BlpInternalError=FakeBlpInternalError,
+    )
+
+    exceptions._bind_core_exceptions(fake_core)
+
+    error = exceptions.BlpRequestError(
+        "request failed",
+        service="//blp/refdata",
+        operation="ReferenceDataRequest",
+        request_id="req-123",
+        code=42,
+    )
+    parsed = exceptions.BlpValidationError.from_rust_error(
+        "Unknown element 'securitiez' (did you mean 'securities'?)",
+    )
+
+    assert isinstance(error, FakeBlpRequestError)
+    assert error.service == "//blp/refdata"
+    assert error.operation == "ReferenceDataRequest"
+    assert error.request_id == "req-123"
+    assert error.code == 42
+    assert parsed.element == "securitiez"
+    assert parsed.suggestion == "securities"
+    assert issubclass(exceptions.BlpBPipeError, FakeBlpError)

@@ -5,6 +5,30 @@
 
 // Import types from parent module (which includes bindings.rs)
 use super::*;
+use std::ffi::{c_char, c_void};
+
+fn out_ptr<T>(fill: impl FnOnce(*mut *mut T) -> i32) -> *mut T {
+    let mut out = std::ptr::null_mut();
+    if fill(&mut out) == 0 {
+        out
+    } else {
+        std::ptr::null_mut()
+    }
+}
+
+unsafe fn with_named_child(
+    element: *mut blpapi_Element_t,
+    name_str: *const c_char,
+    f: impl FnOnce(*mut blpapi_Element_t) -> i32,
+) -> i32 {
+    let mut child: *mut blpapi_Element_t = std::ptr::null_mut();
+    let rc = datamock_Element_getElement_impl(element, &mut child, name_str);
+    if rc != 0 || child.is_null() {
+        rc
+    } else {
+        f(child)
+    }
+}
 
 // Declare the datamock functions that were blocklisted in build.rs
 // Use #[link_name] to call the actual datamock_* symbols in the C library
@@ -13,13 +37,13 @@ extern "C" {
     fn datamock_Element_getElement_impl(
         element: *mut blpapi_Element_t,
         result: *mut *mut blpapi_Element_t,
-        name: *const std::ffi::c_char,
+        name: *const c_char,
     ) -> i32;
 
     #[link_name = "datamock_Element_setValueString"]
     fn datamock_Element_setValueString_impl(
         element: *mut blpapi_Element_t,
-        value: *const std::ffi::c_char,
+        value: *const c_char,
         index: usize,
     ) -> i32;
 
@@ -52,9 +76,9 @@ extern "C" {
     fn datamock_Session_create_impl(
         options: *mut blpapi_SessionOptions_t,
         handler: Option<
-            unsafe extern "C" fn(*mut blpapi_Event_t, *mut blpapi_Session_t, *mut std::ffi::c_void),
+            unsafe extern "C" fn(*mut blpapi_Event_t, *mut blpapi_Session_t, *mut c_void),
         >,
-        user_data: *mut std::ffi::c_void,
+        user_data: *mut c_void,
     ) -> *mut blpapi_Session_t;
 
     #[link_name = "datamock_Session_sendRequest"]
@@ -62,7 +86,7 @@ extern "C" {
         session: *mut blpapi_Session_t,
         request: *mut blpapi_Request_t,
         correlation_id: *mut blpapi_CorrelationId_t,
-        request_label: *const std::ffi::c_char,
+        request_label: *const c_char,
     ) -> i32;
 
     #[link_name = "datamock_Session_subscribe"]
@@ -80,9 +104,9 @@ extern "C" {
     #[link_name = "datamock_SubscriptionList_add"]
     fn datamock_SubscriptionList_add_impl(
         list: *mut blpapi_SubscriptionList_t,
-        topic: *const std::ffi::c_char,
-        fields: *const std::ffi::c_char,
-        options: *const std::ffi::c_char,
+        topic: *const c_char,
+        fields: *const c_char,
+        options: *const c_char,
         correlation_id: *mut blpapi_CorrelationId_t,
     ) -> i32;
 }
@@ -102,8 +126,8 @@ extern "C" {
 pub unsafe extern "C" fn blpapi_Element_getElement(
     element: *mut blpapi_Element_t,
     result: *mut *mut blpapi_Element_t,
-    name_string: *const std::ffi::c_char, // C string name (can be null)
-    name_obj: *const blpapi_Name_t,       // Name pointer (can be null)
+    name_string: *const c_char,     // C string name (can be null)
+    name_obj: *const blpapi_Name_t, // Name pointer (can be null)
 ) -> i32 {
     // Prefer name_string if provided, otherwise convert Name to string
     let name_str = if !name_string.is_null() {
@@ -122,7 +146,7 @@ pub unsafe extern "C" fn blpapi_Element_getElement(
 
 pub unsafe extern "C" fn blpapi_Element_setValueString(
     element: *mut blpapi_Element_t,
-    value: *const std::ffi::c_char,
+    value: *const c_char,
     _index: usize, // datamock uses index parameter
 ) -> i32 {
     datamock_Element_setValueString_impl(element, value, 0)
@@ -159,11 +183,7 @@ pub unsafe extern "C" fn blpapi_Element_setValueFloat64(
 ) -> i32 {
     // datamock doesn't have setValueFloat64, convert to string
     let value_str = format!("{}\0", value);
-    datamock_Element_setValueString_impl(
-        element,
-        value_str.as_ptr() as *const std::ffi::c_char,
-        index,
-    )
+    datamock_Element_setValueString_impl(element, value_str.as_ptr() as *const c_char, index)
 }
 
 /// Element setElementString: Set by name
@@ -174,51 +194,41 @@ pub unsafe extern "C" fn blpapi_Element_setValueFloat64(
 
 pub unsafe extern "C" fn blpapi_Element_setElementString(
     element: *mut blpapi_Element_t,
-    name_str: *const std::ffi::c_char,
+    name_str: *const c_char,
     _name_obj: *const blpapi_Name_t, // Ignored
-    value: *const std::ffi::c_char,
+    value: *const c_char,
 ) -> i32 {
-    // Get child element by name string, then set its value
-    let mut child: *mut blpapi_Element_t = std::ptr::null_mut();
-    let rc = datamock_Element_getElement_impl(element, &mut child, name_str);
-    if rc != 0 || child.is_null() {
-        return rc;
-    }
-    datamock_Element_setValueString_impl(child, value, 0)
+    with_named_child(element, name_str, |child| {
+        datamock_Element_setValueString_impl(child, value, 0)
+    })
 }
 
 /// Element setElementInt32: Set by name
 
 pub unsafe extern "C" fn blpapi_Element_setElementInt32(
     element: *mut blpapi_Element_t,
-    name_str: *const std::ffi::c_char,
+    name_str: *const c_char,
     _name_obj: *const blpapi_Name_t, // Ignored
     value: i32,
 ) -> i32 {
-    let mut child: *mut blpapi_Element_t = std::ptr::null_mut();
-    let rc = datamock_Element_getElement_impl(element, &mut child, name_str);
-    if rc != 0 || child.is_null() {
-        return rc;
-    }
-    datamock_Element_setValueInt32_impl(child, value, 0)
+    with_named_child(element, name_str, |child| {
+        datamock_Element_setValueInt32_impl(child, value, 0)
+    })
 }
 
 /// Element setElementFloat64: Set by name
 
 pub unsafe extern "C" fn blpapi_Element_setElementFloat64(
     element: *mut blpapi_Element_t,
-    name_str: *const std::ffi::c_char,
+    name_str: *const c_char,
     _name_obj: *const blpapi_Name_t, // Ignored
     value: f64,
 ) -> i32 {
-    let mut child: *mut blpapi_Element_t = std::ptr::null_mut();
-    let rc = datamock_Element_getElement_impl(element, &mut child, name_str);
-    if rc != 0 || child.is_null() {
-        return rc;
-    }
-    // datamock doesn't have setValueFloat64, convert to string
-    let value_str = format!("{}\0", value);
-    datamock_Element_setValueString_impl(child, value_str.as_ptr() as *const std::ffi::c_char, 0)
+    with_named_child(element, name_str, |child| {
+        // datamock doesn't have setValueFloat64, convert to string
+        let value_str = format!("{}\0", value);
+        datamock_Element_setValueString_impl(child, value_str.as_ptr() as *const c_char, 0)
+    })
 }
 
 // ============================================================================
@@ -233,12 +243,7 @@ pub unsafe extern "C" fn blpapi_Element_setElementFloat64(
 pub unsafe extern "C" fn blpapi_MessageIterator_create(
     event: *mut blpapi_Event_t,
 ) -> *mut blpapi_MessageIterator_t {
-    let mut iterator: *mut blpapi_MessageIterator_t = std::ptr::null_mut();
-    let rc = datamock_MessageIterator_create_impl(&mut iterator, event);
-    if rc != 0 {
-        return std::ptr::null_mut();
-    }
-    iterator
+    out_ptr(|iterator| datamock_MessageIterator_create_impl(iterator, event))
 }
 
 // ============================================================================
@@ -253,12 +258,7 @@ pub unsafe extern "C" fn blpapi_MessageIterator_create(
 pub unsafe extern "C" fn blpapi_Message_elements(
     message: *mut blpapi_Message_t,
 ) -> *mut blpapi_Element_t {
-    let mut element: *mut blpapi_Element_t = std::ptr::null_mut();
-    let rc = datamock_Message_elements_impl(message, &mut element);
-    if rc != 0 {
-        return std::ptr::null_mut();
-    }
-    element
+    out_ptr(|element| datamock_Message_elements_impl(message, element))
 }
 
 // ============================================================================
@@ -273,12 +273,7 @@ pub unsafe extern "C" fn blpapi_Message_elements(
 pub unsafe extern "C" fn blpapi_Request_elements(
     request: *mut blpapi_Request_t,
 ) -> *mut blpapi_Element_t {
-    let mut element: *mut blpapi_Element_t = std::ptr::null_mut();
-    let rc = datamock_Request_getElement_impl(request, &mut element);
-    if rc != 0 {
-        return std::ptr::null_mut();
-    }
-    element
+    out_ptr(|element| datamock_Request_getElement_impl(request, element))
 }
 
 // ============================================================================
@@ -292,11 +287,9 @@ pub unsafe extern "C" fn blpapi_Request_elements(
 
 pub unsafe extern "C" fn blpapi_Session_create(
     options: *mut blpapi_SessionOptions_t,
-    handler: Option<
-        unsafe extern "C" fn(*mut blpapi_Event_t, *mut blpapi_Session_t, *mut std::ffi::c_void),
-    >,
-    _dispatcher: *mut std::ffi::c_void, // Ignored - datamock doesn't use dispatcher
-    user_data: *mut std::ffi::c_void,
+    handler: Option<unsafe extern "C" fn(*mut blpapi_Event_t, *mut blpapi_Session_t, *mut c_void)>,
+    _dispatcher: *mut c_void, // Ignored - datamock doesn't use dispatcher
+    user_data: *mut c_void,
 ) -> *mut blpapi_Session_t {
     datamock_Session_create_impl(options, handler, user_data)
 }
@@ -310,9 +303,9 @@ pub unsafe extern "C" fn blpapi_Session_sendRequest(
     session: *mut blpapi_Session_t,
     request: *mut blpapi_Request_t,
     correlation_id: *mut blpapi_CorrelationId_t,
-    _identity: *mut blpapi_Identity_t,   // Ignored
-    _event_queue: *mut std::ffi::c_void, // Ignored
-    request_label: *const std::ffi::c_char,
+    _identity: *mut blpapi_Identity_t, // Ignored
+    _event_queue: *mut c_void,         // Ignored
+    request_label: *const c_char,
     _request_label_len: i32, // Ignored - datamock uses null-terminated strings
 ) -> i32 {
     datamock_Session_sendRequest_impl(session, request, correlation_id, request_label)
@@ -327,7 +320,7 @@ pub unsafe extern "C" fn blpapi_Session_subscribe(
     session: *mut blpapi_Session_t,
     subscriptions: *const blpapi_SubscriptionList_t,
     _identity: *const blpapi_Identity_t, // Ignored (const, not mut)
-    _request_label: *const std::ffi::c_char, // Ignored
+    _request_label: *const c_char,       // Ignored
     _request_label_len: i32,             // Ignored
 ) -> i32 {
     datamock_Session_subscribe_impl(session, subscriptions as *mut blpapi_SubscriptionList_t)
@@ -341,8 +334,8 @@ pub unsafe extern "C" fn blpapi_Session_subscribe(
 pub unsafe extern "C" fn blpapi_Session_unsubscribe(
     session: *mut blpapi_Session_t,
     subscriptions: *const blpapi_SubscriptionList_t,
-    _request_label: *const std::ffi::c_char, // Ignored
-    _request_label_len: i32,                 // Ignored
+    _request_label: *const c_char, // Ignored
+    _request_label_len: i32,       // Ignored
 ) -> i32 {
     datamock_Session_unsubscribe_impl(session, subscriptions as *mut blpapi_SubscriptionList_t)
 }
@@ -358,10 +351,10 @@ pub unsafe extern "C" fn blpapi_Session_unsubscribe(
 
 pub unsafe extern "C" fn blpapi_SubscriptionList_add(
     list: *mut blpapi_SubscriptionList_t,
-    topic: *const std::ffi::c_char,
+    topic: *const c_char,
     correlation_id: *const blpapi_CorrelationId_t,
-    fields: *const *const std::ffi::c_char,
-    options: *const *const std::ffi::c_char,
+    fields: *const *const c_char,
+    options: *const *const c_char,
     _fields_len: usize,  // Ignored - datamock uses null-terminated strings
     _options_len: usize, // Ignored
 ) -> i32 {

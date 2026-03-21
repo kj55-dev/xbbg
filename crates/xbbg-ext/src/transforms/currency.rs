@@ -15,6 +15,14 @@ pub struct FxConversionInfo {
     pub to_ccy: String,
 }
 
+fn uppercase_currency(ccy: &str) -> String {
+    ccy.to_uppercase()
+}
+
+fn is_pence_denominated(ccy: &str) -> bool {
+    ccy.chars().next_back().is_some_and(|c| c.is_lowercase())
+}
+
 /// Build an FX pair ticker for currency conversion.
 ///
 /// Handles special cases like British pence (GBp) vs pounds (GBP).
@@ -43,19 +51,14 @@ pub struct FxConversionInfo {
 /// assert_eq!(info_pence.factor, 100.0);
 /// ```
 pub fn build_fx_pair(from_ccy: &str, to_ccy: &str) -> FxConversionInfo {
-    // Check for pence/cents (lowercase last char)
-    let factor = if from_ccy
-        .chars()
-        .next_back()
-        .is_some_and(|c| c.is_lowercase())
-    {
+    let factor = if is_pence_denominated(from_ccy) {
         100.0
     } else {
         1.0
     };
 
-    let from_upper = from_ccy.to_uppercase();
-    let to_upper = to_ccy.to_uppercase();
+    let from_upper = uppercase_currency(from_ccy);
+    let to_upper = uppercase_currency(to_ccy);
 
     // FX pair format: TARGET_SOURCE Curncy
     let fx_pair = format!("{}{} Curncy", to_upper, from_upper);
@@ -83,7 +86,7 @@ pub fn build_fx_pair(from_ccy: &str, to_ccy: &str) -> FxConversionInfo {
 /// assert!(!same_currency("USD", "EUR"));
 /// ```
 pub fn same_currency(ccy1: &str, ccy2: &str) -> bool {
-    ccy1.to_uppercase() == ccy2.to_uppercase()
+    uppercase_currency(ccy1) == uppercase_currency(ccy2)
 }
 
 /// Extract unique currencies from a list that need FX conversion.
@@ -102,10 +105,10 @@ pub fn same_currency(ccy1: &str, ccy2: &str) -> bool {
 /// assert!(need_fx.contains(&"EUR".to_string()));
 /// ```
 pub fn currencies_needing_conversion(currencies: &[&str], target: &str) -> Vec<String> {
-    let target_upper = target.to_uppercase();
+    let target_upper = uppercase_currency(target);
     let mut unique: Vec<String> = currencies
         .iter()
-        .filter(|c| c.to_uppercase() != target_upper)
+        .filter(|c| uppercase_currency(c) != target_upper)
         .map(|c| c.to_string())
         .collect();
 

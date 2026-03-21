@@ -17,7 +17,19 @@ use arrow::record_batch::RecordBatch;
 use indexmap::IndexMap;
 use xbbg_core::{BlpError, Value};
 
-use super::value_utils::{format_date32, format_time64_micros, format_timestamp_micros};
+use super::value_utils::value_to_string;
+
+const MICROS_PER_DAY: i64 = 86_400_000_000;
+
+macro_rules! append_converted_value {
+    ($builder:expr, $value:expr, $convert:expr) => {{
+        if let Some(v) = $value.and_then($convert) {
+            $builder.append_value(v);
+        } else {
+            $builder.append_null();
+        }
+    }};
+}
 
 /// Arrow type identifier (subset of Arrow types we support).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -107,6 +119,32 @@ pub enum TypedBuilder {
 }
 
 impl TypedBuilder {
+    fn as_array_builder(&self) -> &dyn ArrayBuilder {
+        match self {
+            TypedBuilder::Float64(b) => b,
+            TypedBuilder::Int64(b) => b,
+            TypedBuilder::Int32(b) => b,
+            TypedBuilder::String(b) => b,
+            TypedBuilder::Bool(b) => b,
+            TypedBuilder::Date32(b) => b,
+            TypedBuilder::TimestampMicros(b) => b,
+            TypedBuilder::Time64Micros(b) => b,
+        }
+    }
+
+    fn as_array_builder_mut(&mut self) -> &mut dyn ArrayBuilder {
+        match self {
+            TypedBuilder::Float64(b) => b,
+            TypedBuilder::Int64(b) => b,
+            TypedBuilder::Int32(b) => b,
+            TypedBuilder::String(b) => b,
+            TypedBuilder::Bool(b) => b,
+            TypedBuilder::Date32(b) => b,
+            TypedBuilder::TimestampMicros(b) => b,
+            TypedBuilder::Time64Micros(b) => b,
+        }
+    }
+
     /// Create a new builder from an ArrowType.
     pub fn new(arrow_type: ArrowType) -> Self {
         match arrow_type {
@@ -116,9 +154,9 @@ impl TypedBuilder {
             ArrowType::String => TypedBuilder::String(StringBuilder::new()),
             ArrowType::Bool => TypedBuilder::Bool(BooleanBuilder::new()),
             ArrowType::Date32 => TypedBuilder::Date32(Date32Builder::new()),
-            ArrowType::TimestampMicros => {
-                TypedBuilder::TimestampMicros(TimestampMicrosecondBuilder::new())
-            }
+            ArrowType::TimestampMicros => TypedBuilder::TimestampMicros(
+                TimestampMicrosecondBuilder::new().with_timezone("UTC"),
+            ),
             ArrowType::Time64Micros => TypedBuilder::Time64Micros(Time64MicrosecondBuilder::new()),
         }
     }
@@ -131,116 +169,20 @@ impl TypedBuilder {
     /// Append a value from xbbg_core::Value, converting as needed.
     pub fn append_value(&mut self, value: Option<Value<'_>>) {
         match self {
-            TypedBuilder::Float64(b) => {
-                if let Some(v) = value.and_then(|v| v.as_f64()) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            TypedBuilder::Int64(b) => {
-                if let Some(v) = value.and_then(|v| v.as_i64()) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            TypedBuilder::Int32(b) => {
-                if let Some(v) = value.and_then(|v| match v {
-                    Value::Int32(i) => Some(i),
-                    Value::Int64(i) => Some(i as i32),
-                    Value::Byte(i) => Some(i as i32),
-                    Value::Bool(b) => Some(if b { 1 } else { 0 }),
-                    _ => None,
-                }) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
+            TypedBuilder::Float64(b) => append_converted_value!(b, value, |v| v.as_f64()),
+            TypedBuilder::Int64(b) => append_converted_value!(b, value, |v| v.as_i64()),
+            TypedBuilder::Int32(b) => append_converted_value!(b, value, value_to_i32),
             TypedBuilder::String(b) => match value {
-                Some(Value::String(s)) | Some(Value::Enum(s)) => b.append_value(s),
-                Some(Value::Float64(f)) => {
-                    let s = f.to_string();
-                    b.append_value(&s);
-                }
-                Some(Value::Int64(i)) => {
-                    let s = i.to_string();
-                    b.append_value(&s);
-                }
-                Some(Value::Int32(i)) => {
-                    let s = i.to_string();
-                    b.append_value(&s);
-                }
-                Some(Value::Bool(v)) => {
-                    let s = v.to_string();
-                    b.append_value(&s);
-                }
-                Some(Value::Date32(d)) => {
-                    let s = format_date32(d);
-                    b.append_value(&s);
-                }
-                Some(Value::TimestampMicros(ts)) => {
-                    let s = format_timestamp_micros(ts);
-                    b.append_value(&s);
-                }
-                Some(Value::Datetime(dt)) => {
-                    let s = format_timestamp_micros(dt.to_micros());
-                    b.append_value(&s);
-                }
-                Some(Value::Time64Micros(t)) => {
-                    let s = format_time64_micros(t);
-                    b.append_value(&s);
-                }
-                Some(Value::Byte(v)) => {
-                    let s = v.to_string();
-                    b.append_value(&s);
-                }
-                Some(Value::Null) | None => b.append_null(),
+                Some(value) => append_string_value(b, value),
+                None => b.append_null(),
             },
-            TypedBuilder::Bool(b) => {
-                if let Some(v) = value.and_then(|v| v.as_bool()) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            TypedBuilder::Date32(b) => {
-                if let Some(days) = value.and_then(|v| match v {
-                    Value::Date32(d) => Some(d),
-                    Value::TimestampMicros(ts) => Some((ts / 86_400_000_000) as i32),
-                    _ => None,
-                }) {
-                    b.append_value(days);
-                } else {
-                    b.append_null();
-                }
-            }
+            TypedBuilder::Bool(b) => append_converted_value!(b, value, |v| v.as_bool()),
+            TypedBuilder::Date32(b) => append_converted_value!(b, value, value_to_date32),
             TypedBuilder::TimestampMicros(b) => {
-                if let Some(micros) = value.and_then(|v| match v {
-                    Value::TimestampMicros(ts) => Some(ts),
-                    Value::Datetime(dt) => Some(dt.to_micros()),
-                    Value::Date32(d) => Some(d as i64 * 86_400_000_000),
-                    _ => None,
-                }) {
-                    b.append_value(micros);
-                } else {
-                    b.append_null();
-                }
+                append_converted_value!(b, value, value_to_timestamp_micros)
             }
             TypedBuilder::Time64Micros(b) => {
-                if let Some(micros) = value.and_then(|v| match v {
-                    Value::Time64Micros(ts) => Some(ts),
-                    Value::TimestampMicros(ts) => {
-                        // Extract time-of-day from full timestamp
-                        Some(ts.rem_euclid(86_400_000_000))
-                    }
-                    _ => None,
-                }) {
-                    b.append_value(micros);
-                } else {
-                    b.append_null();
-                }
+                append_converted_value!(b, value, value_to_time64_micros)
             }
         }
     }
@@ -269,16 +211,7 @@ impl TypedBuilder {
 
     /// Get the number of values appended.
     pub fn len(&self) -> usize {
-        match self {
-            TypedBuilder::Float64(b) => b.len(),
-            TypedBuilder::Int64(b) => b.len(),
-            TypedBuilder::Int32(b) => b.len(),
-            TypedBuilder::String(b) => b.len(),
-            TypedBuilder::Bool(b) => b.len(),
-            TypedBuilder::Date32(b) => b.len(),
-            TypedBuilder::TimestampMicros(b) => b.len(),
-            TypedBuilder::Time64Micros(b) => b.len(),
-        }
+        self.as_array_builder().len()
     }
 
     /// Check if builder is empty.
@@ -288,32 +221,12 @@ impl TypedBuilder {
 
     /// Finish building and return the array.
     pub fn finish(&mut self) -> ArrayRef {
-        match self {
-            TypedBuilder::Float64(b) => Arc::new(b.finish()),
-            TypedBuilder::Int64(b) => Arc::new(b.finish()),
-            TypedBuilder::Int32(b) => Arc::new(b.finish()),
-            TypedBuilder::String(b) => Arc::new(b.finish()),
-            TypedBuilder::Bool(b) => Arc::new(b.finish()),
-            TypedBuilder::Date32(b) => Arc::new(b.finish()),
-            TypedBuilder::TimestampMicros(b) => Arc::new(b.finish().with_timezone("UTC")),
-            TypedBuilder::Time64Micros(b) => Arc::new(b.finish()),
-        }
+        self.as_array_builder_mut().finish()
     }
 
     /// Get the Arrow DataType for this builder.
     pub fn data_type(&self) -> DataType {
-        match self {
-            TypedBuilder::Float64(_) => DataType::Float64,
-            TypedBuilder::Int64(_) => DataType::Int64,
-            TypedBuilder::Int32(_) => DataType::Int32,
-            TypedBuilder::String(_) => DataType::Utf8,
-            TypedBuilder::Bool(_) => DataType::Boolean,
-            TypedBuilder::Date32(_) => DataType::Date32,
-            TypedBuilder::TimestampMicros(_) => {
-                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-            }
-            TypedBuilder::Time64Micros(_) => DataType::Time64(TimeUnit::Microsecond),
-        }
+        self.arrow_type().to_arrow_datatype()
     }
 
     /// Get the ArrowType for this builder.
@@ -364,6 +277,15 @@ impl ColumnSet {
             "value_ts" => ArrowType::TimestampMicros,
             _ => ArrowType::String,
         }
+    }
+
+    fn new_builder_for_column(&self, name: &str, value: Option<&Value<'_>>) -> TypedBuilder {
+        let arrow_type = self
+            .type_hints
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| value.map_or(ArrowType::String, ArrowType::from_value));
+        TypedBuilder::new(arrow_type)
     }
 
     fn build_empty_with_order(&self, order: &[&str]) -> Result<RecordBatch, BlpError> {
@@ -418,15 +340,8 @@ impl ColumnSet {
     /// Creates the column if it doesn't exist, inferring type from the value
     /// or using type hints if available.
     pub fn append(&mut self, name: &str, value: Value<'_>) {
-        let builder = self.columns.entry(name.to_string()).or_insert_with(|| {
-            // Use type hint if available, otherwise infer from value
-            let arrow_type = self
-                .type_hints
-                .get(name)
-                .copied()
-                .unwrap_or_else(|| ArrowType::from_value(&value));
-            TypedBuilder::new(arrow_type)
-        });
+        let builder = self.new_builder_for_column(name, Some(&value));
+        let builder = self.columns.entry(name.to_string()).or_insert(builder);
         builder.append_value(Some(value));
     }
 
@@ -440,13 +355,7 @@ impl ColumnSet {
         if let Some(builder) = self.columns.get_mut(name) {
             builder.append_null();
         } else {
-            // Create string column with null (most flexible type)
-            let arrow_type = self
-                .type_hints
-                .get(name)
-                .copied()
-                .unwrap_or(ArrowType::String);
-            let mut builder = TypedBuilder::new(arrow_type);
+            let mut builder = self.new_builder_for_column(name, None);
             builder.append_null();
             self.columns.insert(name.to_string(), builder);
         }
@@ -544,6 +453,55 @@ impl ColumnSet {
     }
 }
 
+fn append_string_value(builder: &mut StringBuilder, value: Value<'_>) {
+    match value {
+        Value::Null => builder.append_null(),
+        Value::String(s) | Value::Enum(s) => builder.append_value(s),
+        value => {
+            let s = value_to_string(&value);
+            builder.append_value(s.as_ref());
+        }
+    }
+}
+
+fn value_to_i32(value: Value<'_>) -> Option<i32> {
+    match value {
+        Value::Int32(i) => Some(i),
+        Value::Int64(i) => Some(i as i32),
+        Value::Byte(i) => Some(i as i32),
+        Value::Bool(b) => Some(if b { 1 } else { 0 }),
+        _ => None,
+    }
+}
+
+fn value_to_date32(value: Value<'_>) -> Option<i32> {
+    match value {
+        Value::Date32(d) => Some(d),
+        Value::TimestampMicros(ts) => Some((ts / MICROS_PER_DAY) as i32),
+        _ => None,
+    }
+}
+
+fn value_to_timestamp_micros(value: Value<'_>) -> Option<i64> {
+    match value {
+        Value::TimestampMicros(ts) => Some(ts),
+        Value::Datetime(dt) => Some(dt.to_micros()),
+        Value::Date32(d) => Some(d as i64 * MICROS_PER_DAY),
+        _ => None,
+    }
+}
+
+fn value_to_time64_micros(value: Value<'_>) -> Option<i64> {
+    match value {
+        Value::Time64Micros(ts) => Some(ts),
+        Value::TimestampMicros(ts) => {
+            // Extract time-of-day from full timestamp
+            Some(ts.rem_euclid(MICROS_PER_DAY))
+        }
+        _ => None,
+    }
+}
+
 impl Default for ColumnSet {
     fn default() -> Self {
         Self::new()
@@ -558,6 +516,7 @@ pub fn create_field(name: &str, arrow_type: ArrowType, nullable: bool) -> Field 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{Array, Int32Array, StringArray, TimestampMicrosecondArray};
 
     #[test]
     fn test_arrow_type_parse() {
@@ -579,6 +538,56 @@ mod tests {
             ArrowType::String
         );
         assert_eq!(ArrowType::from_value(&Value::Bool(true)), ArrowType::Bool);
+    }
+
+    #[test]
+    fn test_typed_builder_int32_coercions() {
+        let mut builder = TypedBuilder::new(ArrowType::Int32);
+
+        builder.append_value(Some(Value::Bool(true)));
+        builder.append_value(Some(Value::Byte(7)));
+        builder.append_value(None);
+
+        let array = builder.finish();
+        let array = array.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(array.len(), 3);
+        assert_eq!(array.value(0), 1);
+        assert_eq!(array.value(1), 7);
+        assert!(array.is_null(2));
+    }
+
+    #[test]
+    fn test_typed_builder_string_formats_non_string_values() {
+        let mut builder = TypedBuilder::new(ArrowType::String);
+
+        builder.append_value(Some(Value::Bool(true)));
+        builder.append_value(Some(Value::Date32(0)));
+        builder.append_value(Some(Value::Null));
+
+        let array = builder.finish();
+        let array = array.as_any().downcast_ref::<StringArray>().unwrap();
+
+        assert_eq!(array.len(), 3);
+        assert_eq!(array.value(0), "true");
+        assert_eq!(array.value(1), "1970-01-01");
+        assert!(array.is_null(2));
+    }
+
+    #[test]
+    fn test_typed_builder_timestamp_micros_uses_utc_timezone() {
+        let mut builder = TypedBuilder::new(ArrowType::TimestampMicros);
+
+        builder.append_value(Some(Value::TimestampMicros(0)));
+
+        let array = builder.finish();
+        let array = array
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+
+        assert_eq!(array.timezone(), Some("UTC"));
+        assert_eq!(array.value(0), 0);
     }
 
     #[test]
@@ -615,6 +624,26 @@ mod tests {
 
         let batch = cols.finish().unwrap();
         assert_eq!(batch.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_column_set_append_null_creates_string_column() {
+        let mut cols = ColumnSet::new();
+
+        cols.append_null("missing");
+        cols.end_row();
+
+        let batch = cols.finish().unwrap();
+        let array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+
+        assert_eq!(batch.schema().field(0).name(), "missing");
+        assert_eq!(batch.schema().field(0).data_type(), &DataType::Utf8);
+        assert_eq!(array.len(), 1);
+        assert!(array.is_null(0));
     }
 
     #[test]

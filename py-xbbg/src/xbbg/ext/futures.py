@@ -124,7 +124,7 @@ def _coerce_datetime(value) -> datetime | None:
 
 async def _resolve_chain(gen_ticker: str, dt: datetime, **kwargs) -> list[tuple[str, datetime]]:
     """Resolve futures chain via ``FUT_CHAIN_LAST_TRADE_DATES`` at ``CHAIN_DATE``."""
-    from xbbg import abds
+    from xbbg.blp import abds
 
     chain_date = dt.strftime("%Y%m%d")
     overrides = {"CHAIN_DATE": chain_date}
@@ -240,7 +240,7 @@ def _strip_version_from_ticker(ticker: str) -> str:
 
 async def _resolve_version_for_ticker(ticker: str, **kwargs) -> str:
     """Resolve CDX version for a series ticker and append ``V{n}`` when needed."""
-    from xbbg import abdp
+    from xbbg.blp import abdp
 
     try:
         meta = await abdp(tickers=ticker, flds=[_FLD_VERSION], **kwargs)
@@ -363,7 +363,7 @@ async def aactive_futures(
 
         asyncio.run(main())
     """
-    from xbbg import abdh
+    from xbbg.blp import abdh
 
     dt_parsed = _parse_date(dt)
 
@@ -415,8 +415,8 @@ async def aactive_futures(
     volume = await abdh(
         tickers=[fut_1, fut_2],
         flds="volume",
-        start_date=start_date,
-        end_date=dt_parsed,
+        start_date=start_date.strftime("%Y-%m-%d"),
+        end_date=dt_parsed.strftime("%Y-%m-%d"),
         **kwargs,
     )
     nw_vol = nw.from_native(volume)
@@ -489,7 +489,7 @@ async def acdx_ticker(
 
         asyncio.run(main())
     """
-    from xbbg import abdp
+    from xbbg.blp import abdp
 
     dt_parsed = _parse_date(dt)
 
@@ -579,7 +579,7 @@ async def aactive_cdx(
     3) prefer previous if date is before current accrual start
     4) otherwise compare recency of ``PX_LAST`` over lookback window
     """
-    from xbbg import abdh, abdp
+    from xbbg.blp import abdh, abdp
 
     cur = await acdx_ticker(gen_ticker=gen_ticker, dt=dt, **kwargs)
     if not cur:
@@ -619,7 +619,13 @@ async def aactive_cdx(
     end = dt_parsed
 
     try:
-        px = await abdh(tickers=[cur, prev], flds=["PX_LAST"], start_date=start, end_date=end, **kwargs)
+        px = await abdh(
+            tickers=[cur, prev],
+            flds=["PX_LAST"],
+            start_date=start.strftime("%Y-%m-%d"),
+            end_date=end.strftime("%Y-%m-%d"),
+            **kwargs,
+        )
         nw_px = nw.from_native(px)
 
         if len(nw_px) == 0:

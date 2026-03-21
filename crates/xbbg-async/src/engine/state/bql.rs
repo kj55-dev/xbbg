@@ -79,28 +79,15 @@ impl BqlState {
         // Structure 1: beqlData -> results
         if let Some(beql_data) = root.get_by_str("beqlData") {
             if let Some(results) = beql_data.get_by_str("results") {
-                // Check if first result is a JSON string
-                if !results.is_empty() {
-                    if let Some(first) = results.get_element(0) {
-                        if let Some(xbbg_core::Value::String(s)) = first.get_value(0) {
-                            // This is a JSON-encoded response
-                            if s.starts_with('{') {
-                                self.json_buffer = Some(s.to_string());
-                                return;
-                            }
-                        }
-                    }
+                if self.store_json_buffer_from_result(&results) {
+                    return;
                 }
                 self.extract_results(&results);
                 return;
             }
 
-            // Check for direct JSON string in beqlData
-            if let Some(xbbg_core::Value::String(s)) = beql_data.get_value(0) {
-                if s.starts_with('{') {
-                    self.json_buffer = Some(s.to_string());
-                    return;
-                }
+            if self.store_json_buffer(beql_data.get_value(0)) {
+                return;
             }
         }
 
@@ -111,11 +98,8 @@ impl BqlState {
         }
 
         // Structure 3: Check if root contains a JSON string value
-        if let Some(xbbg_core::Value::String(s)) = root.get_value(0) {
-            if s.starts_with('{') {
-                self.json_buffer = Some(s.to_string());
-                return;
-            }
+        if self.store_json_buffer(root.get_value(0)) {
+            return;
         }
 
         // Structure 4: Flatten the entire response (fallback)
@@ -162,50 +146,41 @@ impl BqlState {
         }
 
         // Collect field names and determine row count from first field
-        let field_names: Vec<&String> = results_obj.keys().collect();
+        let field_names: Vec<&str> = results_obj.keys().map(String::as_str).collect();
         let mut id_values: Vec<String> = Vec::new();
         let mut field_columns: Vec<(&str, Vec<Option<JsonValue>>)> = Vec::new();
 
-        for field_name in &field_names {
-            let field_data = &results_obj[*field_name];
+        for &field_name in &field_names {
+            let field_data = &results_obj[field_name];
 
             // Extract idColumn values (only need to do this once)
             if id_values.is_empty() {
-                if let Some(id_col) = field_data.get("idColumn") {
-                    if let Some(values) = id_col.get("values") {
-                        if let Some(arr) = values.as_array() {
-                            id_values = arr
-                                .iter()
-                                .map(|v| match v {
-                                    JsonValue::String(s) => s.clone(),
-                                    JsonValue::Null => String::new(),
-                                    other => other.to_string(),
-                                })
-                                .collect();
-                        }
-                    }
-                }
+                id_values = Self::json_values(field_data, "idColumn")
+                    .map(|values| values.iter().map(Self::json_id_value).collect())
+                    .unwrap_or_default();
             }
 
             // Extract valuesColumn values
-            let mut values: Vec<Option<JsonValue>> = Vec::new();
-            if let Some(val_col) = field_data.get("valuesColumn") {
-                if let Some(vals) = val_col.get("values") {
-                    if let Some(arr) = vals.as_array() {
-                        values = arr
-                            .iter()
-                            .map(|v| if v.is_null() { None } else { Some(v.clone()) })
-                            .collect();
-                    }
-                }
-            }
+            let mut values: Vec<Option<JsonValue>> = Self::json_values(field_data, "valuesColumn")
+                .map(|vals| {
+                    vals.iter()
+                        .map(|value| {
+                            if value.is_null() {
+                                None
+                            } else {
+                                Some(value.clone())
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
 
             // Pad values to match id_values length if needed
             while values.len() < id_values.len() {
                 values.push(None);
             }
 
-            field_columns.push((field_name.as_str(), values));
+            field_columns.push((field_name, values));
         }
 
         // Build Arrow arrays
@@ -288,6 +263,45 @@ impl BqlState {
         }
     }
 
+    fn store_json_buffer(&mut self, value: Option<xbbg_core::Value>) -> bool {
+        if let Some(json) = Self::json_string(value) {
+            self.json_buffer = Some(json);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn store_json_buffer_from_result(&mut self, results: &xbbg_core::Element) -> bool {
+        results
+            .get_element(0)
+            .and_then(|first| first.get_value(0))
+            .is_some_and(|value| self.store_json_buffer(Some(value)))
+    }
+
+    fn json_string(value: Option<xbbg_core::Value>) -> Option<String> {
+        match value {
+            Some(xbbg_core::Value::String(s)) if s.starts_with('{') => Some(s.to_string()),
+            _ => None,
+        }
+    }
+
+    fn json_values<'a>(field_data: &'a JsonValue, key: &str) -> Option<&'a [JsonValue]> {
+        field_data
+            .get(key)?
+            .get("values")?
+            .as_array()
+            .map(Vec::as_slice)
+    }
+
+    fn json_id_value(value: &JsonValue) -> String {
+        match value {
+            JsonValue::String(s) => s.clone(),
+            JsonValue::Null => String::new(),
+            other => other.to_string(),
+        }
+    }
+
     /// Flatten an element into path-value pairs (fallback for complex structures).
     fn flatten_element(&mut self, path: &str, element: &xbbg_core::Element) {
         let datatype = element.datatype();
@@ -341,5 +355,78 @@ impl BqlState {
                 self.columns.end_row();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, Float64Array, StringArray};
+    use serde_json::json;
+
+    fn parse_batch(json: &str) -> RecordBatch {
+        let (tx, _rx) = oneshot::channel();
+        let state = BqlState::new(tx);
+        state.parse_bql_json(json).expect("valid BQL JSON")
+    }
+
+    #[test]
+    fn parses_bql_json_into_wide_batch() {
+        let batch = parse_batch(
+            &json!({
+                "results": {
+                    "px_last": {
+                        "idColumn": { "values": ["AAPL US Equity", "MSFT US Equity"] },
+                        "valuesColumn": { "values": [189.34, null] }
+                    },
+                    "name": {
+                        "valuesColumn": { "values": ["Apple Inc.", "Microsoft"] }
+                    }
+                }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(batch.num_columns(), 3);
+
+        let tickers = batch
+            .column(batch.schema().index_of("ticker").expect("ticker column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("ticker column");
+        assert_eq!(tickers.value(0), "AAPL US Equity");
+        assert_eq!(tickers.value(1), "MSFT US Equity");
+
+        let px_last = batch
+            .column(batch.schema().index_of("px_last").expect("px_last column"))
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("px_last column");
+        assert_eq!(px_last.value(0), 189.34);
+        assert!(px_last.is_null(1));
+
+        let names = batch
+            .column(batch.schema().index_of("name").expect("name column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("name column");
+        assert_eq!(names.value(0), "Apple Inc.");
+        assert_eq!(names.value(1), "Microsoft");
+    }
+
+    #[test]
+    fn parses_empty_bql_json_results_as_empty_batch() {
+        let batch = parse_batch(r#"{"results": {}}"#);
+
+        assert_eq!(batch.num_rows(), 0);
+        assert_eq!(batch.num_columns(), 1);
+
+        let tickers = batch
+            .column(batch.schema().index_of("ticker").expect("ticker column"))
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("ticker column");
+        assert_eq!(tickers.len(), 0);
     }
 }

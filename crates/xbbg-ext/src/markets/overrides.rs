@@ -33,6 +33,28 @@ fn normalize_ticker(ticker: &str) -> Result<String> {
     Ok(normalized.to_string())
 }
 
+fn merge_override_patch(existing: &mut OverridePatch, patch: &OverridePatch) {
+    if let Some(timezone) = &patch.timezone {
+        existing.timezone = Some(timezone.clone());
+    }
+    if let Some(mic) = &patch.mic {
+        existing.mic = Some(mic.clone());
+    }
+    if let Some(exch_code) = &patch.exch_code {
+        existing.exch_code = Some(exch_code.clone());
+    }
+    if let Some(sessions) = &patch.sessions {
+        existing.sessions = Some(sessions.clone());
+    }
+}
+
+fn materialize_override_info(ticker: String, patch: &OverridePatch) -> ExchangeInfo {
+    let mut info = ExchangeInfo::fallback(ticker).with_source(ExchangeInfoSource::Override);
+    patch.apply_to(&mut info);
+    info.cached_at = Some(Utc::now());
+    info
+}
+
 /// Set or merge a runtime override patch for a ticker.
 pub fn set_exchange_override(ticker: &str, patch: OverridePatch) -> Result<()> {
     if patch.is_empty() {
@@ -44,20 +66,7 @@ pub fn set_exchange_override(ticker: &str, patch: OverridePatch) -> Result<()> {
     let mut guard = registry_write()?;
     guard
         .entry(key)
-        .and_modify(|existing| {
-            if patch.timezone.is_some() {
-                existing.timezone = patch.timezone.clone();
-            }
-            if patch.mic.is_some() {
-                existing.mic = patch.mic.clone();
-            }
-            if patch.exch_code.is_some() {
-                existing.exch_code = patch.exch_code.clone();
-            }
-            if patch.sessions.is_some() {
-                existing.sessions = patch.sessions.clone();
-            }
-        })
+        .and_modify(|existing| merge_override_patch(existing, &patch))
         .or_insert(patch);
     Ok(())
 }
@@ -76,11 +85,7 @@ pub fn get_exchange_override(ticker: &str) -> Result<Option<ExchangeInfo>> {
     let Some(patch) = get_exchange_override_patch(ticker)? else {
         return Ok(None);
     };
-    let mut info =
-        ExchangeInfo::fallback(ticker.to_string()).with_source(ExchangeInfoSource::Override);
-    patch.apply_to(&mut info);
-    info.cached_at = Some(Utc::now());
-    Ok(Some(info))
+    Ok(Some(materialize_override_info(ticker.to_string(), &patch)))
 }
 
 /// Remove a single override if `ticker` is provided; clear all otherwise.
@@ -100,11 +105,10 @@ pub fn list_exchange_overrides() -> Result<HashMap<String, ExchangeInfo>> {
     Ok(registry_read()?
         .iter()
         .map(|(ticker, patch)| {
-            let mut info =
-                ExchangeInfo::fallback(ticker.clone()).with_source(ExchangeInfoSource::Override);
-            patch.apply_to(&mut info);
-            info.cached_at = Some(Utc::now());
-            (ticker.clone(), info)
+            (
+                ticker.clone(),
+                materialize_override_info(ticker.clone(), patch),
+            )
         })
         .collect())
 }
@@ -121,9 +125,16 @@ pub fn has_exchange_override(ticker: &str) -> Result<bool> {
 mod tests {
     use super::*;
     use crate::markets::sessions::SessionWindows;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn test_registry_guard() -> MutexGuard<'static, ()> {
+        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn test_override_lifecycle() {
+        let _guard = test_registry_guard();
         clear_exchange_override(None).unwrap();
 
         set_exchange_override(
@@ -161,5 +172,28 @@ mod tests {
 
         clear_exchange_override(Some("AAPL US Equity")).unwrap();
         assert!(!has_exchange_override("AAPL US Equity").unwrap());
+    }
+
+    #[test]
+    fn test_override_list_materialization() {
+        let _guard = test_registry_guard();
+        clear_exchange_override(None).unwrap();
+
+        set_exchange_override(
+            "MSFT US Equity",
+            OverridePatch {
+                mic: Some("XNAS".to_string()),
+                ..OverridePatch::default()
+            },
+        )
+        .unwrap();
+
+        let overrides = list_exchange_overrides().unwrap();
+        let info = overrides.get("MSFT US Equity").unwrap();
+
+        assert_eq!(info.ticker, "MSFT US Equity");
+        assert_eq!(info.mic, Some("XNAS".to_string()));
+        assert_eq!(info.source, ExchangeInfoSource::Override);
+        assert!(info.cached_at.is_some());
     }
 }

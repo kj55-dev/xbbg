@@ -273,6 +273,17 @@ pub struct SubscriptionStatusState {
 pub type SharedSubscriptionStatus = Arc<Mutex<SubscriptionStatusState>>;
 
 impl SubscriptionStatusState {
+    fn insert_pending_topic_state(&mut self, topic: String, last_change_us: i64) {
+        self.topic_states.insert(
+            topic.clone(),
+            TopicStatusInfo {
+                topic,
+                state: TopicLifecycleState::Pending,
+                last_change_us,
+            },
+        );
+    }
+
     pub fn from_active(
         topics: Vec<String>,
         keys: Vec<SlabKey>,
@@ -302,14 +313,7 @@ impl SubscriptionStatusState {
         for (topic, key) in topics.into_iter().zip(keys.into_iter()) {
             status.topic_to_key.insert(topic.clone(), key);
             status.key_to_topic.insert(key, topic.clone());
-            status.topic_states.insert(
-                topic.clone(),
-                TopicStatusInfo {
-                    topic,
-                    state: TopicLifecycleState::Pending,
-                    last_change_us: now,
-                },
-            );
+            status.insert_pending_topic_state(topic, now);
         }
         status
     }
@@ -327,14 +331,7 @@ impl SubscriptionStatusState {
             self.topics.push(topic.clone());
             self.keys.push(*key);
             self.metrics.insert(*key, metric);
-            self.topic_states.insert(
-                topic.clone(),
-                TopicStatusInfo {
-                    topic: topic.clone(),
-                    state: TopicLifecycleState::Pending,
-                    last_change_us: now,
-                },
-            );
+            self.insert_pending_topic_state(topic.clone(), now);
         }
     }
 
@@ -573,25 +570,35 @@ impl SubscriptionStatusState {
     }
 
     pub fn record_admin_warning(&mut self, message_type: &str, detail: Option<String>) {
-        self.admin.slow_consumer_warning_active = true;
-        self.admin.slow_consumer_warning_count += 1;
-        self.admin.last_warning_us = Some(timestamp_now_us());
-        self.push_event(
-            SubscriptionEventCategory::Admin,
-            SubscriptionEventLevel::Warning,
-            message_type,
-            None,
-            detail,
-        );
+        self.record_admin_warning_state(true, message_type, detail);
     }
 
     pub fn record_admin_warning_cleared(&mut self, message_type: &str, detail: Option<String>) {
-        self.admin.slow_consumer_warning_active = false;
-        self.admin.slow_consumer_cleared_count += 1;
-        self.admin.last_cleared_us = Some(timestamp_now_us());
+        self.record_admin_warning_state(false, message_type, detail);
+    }
+
+    fn record_admin_warning_state(
+        &mut self,
+        active: bool,
+        message_type: &str,
+        detail: Option<String>,
+    ) {
+        let now = timestamp_now_us();
+        self.admin.slow_consumer_warning_active = active;
+        if active {
+            self.admin.slow_consumer_warning_count += 1;
+            self.admin.last_warning_us = Some(now);
+        } else {
+            self.admin.slow_consumer_cleared_count += 1;
+            self.admin.last_cleared_us = Some(now);
+        }
         self.push_event(
             SubscriptionEventCategory::Admin,
-            SubscriptionEventLevel::Info,
+            if active {
+                SubscriptionEventLevel::Warning
+            } else {
+                SubscriptionEventLevel::Info
+            },
             message_type,
             None,
             detail,
@@ -611,29 +618,11 @@ impl SubscriptionStatusState {
     }
 
     pub fn record_recovery_attempt(&mut self, detail: Option<String>) {
-        self.session.recovery_attempt_count += 1;
-        self.session.last_recovery_attempt_us = Some(timestamp_now_us());
-        self.session.last_recovery_error = None;
-        self.push_event(
-            SubscriptionEventCategory::Session,
-            SubscriptionEventLevel::Info,
-            "RecoveryAttempt",
-            None,
-            detail,
-        );
+        self.record_recovery_state(false, detail);
     }
 
     pub fn record_recovery_success(&mut self, detail: Option<String>) {
-        self.session.recovery_success_count += 1;
-        self.session.last_recovery_success_us = Some(timestamp_now_us());
-        self.session.last_recovery_error = None;
-        self.push_event(
-            SubscriptionEventCategory::Session,
-            SubscriptionEventLevel::Info,
-            "RecoverySucceeded",
-            None,
-            detail,
-        );
+        self.record_recovery_state(true, detail);
     }
 
     pub fn record_recovery_error(&mut self, detail: String) {
@@ -644,6 +633,32 @@ impl SubscriptionStatusState {
             "RecoveryFailed",
             None,
             Some(detail),
+        );
+    }
+
+    fn record_recovery_state(&mut self, succeeded: bool, detail: Option<String>) {
+        let now = timestamp_now_us();
+        self.session.last_recovery_error = None;
+        let (message_type, last_change_us) = if succeeded {
+            self.session.recovery_success_count += 1;
+            (
+                "RecoverySucceeded",
+                &mut self.session.last_recovery_success_us,
+            )
+        } else {
+            self.session.recovery_attempt_count += 1;
+            (
+                "RecoveryAttempt",
+                &mut self.session.last_recovery_attempt_us,
+            )
+        };
+        *last_change_us = Some(now);
+        self.push_event(
+            SubscriptionEventCategory::Session,
+            SubscriptionEventLevel::Info,
+            message_type,
+            None,
+            detail,
         );
     }
 }
@@ -671,5 +686,50 @@ impl std::fmt::Display for OverflowPolicy {
             Self::DropOldest => write!(f, "drop_oldest"),
             Self::Block => write!(f, "block"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bookkeeping_updates_session_admin_and_event_state() {
+        let mut status = SubscriptionStatusState::default();
+
+        status.record_session_state(SessionLifecycleState::Down, "SessionConnectionDown", None);
+        status.record_session_state(SessionLifecycleState::Up, "SessionConnectionUp", None);
+        status.record_admin_warning("SlowConsumerWarning", None);
+        status.record_admin_warning_cleared("SlowConsumerWarningCleared", None);
+        status.record_admin_data_loss(Some("SPY US Equity".to_string()), None);
+        status.record_recovery_attempt(Some("retrying".to_string()));
+        status.record_recovery_success(Some("recovered".to_string()));
+        status.record_recovery_error("still failing".to_string());
+
+        assert_eq!(status.session().state, SessionLifecycleState::Up);
+        assert_eq!(status.session().disconnect_count, 1);
+        assert_eq!(status.session().reconnect_count, 1);
+        assert_eq!(status.session().recovery_attempt_count, 1);
+        assert_eq!(status.session().recovery_success_count, 1);
+        assert_eq!(
+            status.session().last_recovery_error.as_deref(),
+            Some("still failing")
+        );
+        assert_eq!(status.admin().slow_consumer_warning_active, false);
+        assert_eq!(status.admin().slow_consumer_warning_count, 1);
+        assert_eq!(status.admin().slow_consumer_cleared_count, 1);
+        assert_eq!(status.admin().data_loss_count, 1);
+        assert_eq!(status.events().len(), 8);
+        assert_eq!(
+            status.events().front().map(|event| event.level),
+            Some(SubscriptionEventLevel::Error)
+        );
+        assert_eq!(
+            status
+                .events()
+                .back()
+                .map(|event| event.message_type.as_str()),
+            Some("RecoveryFailed")
+        );
     }
 }

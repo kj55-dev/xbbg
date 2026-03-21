@@ -6,18 +6,32 @@ use pyo3::types::PyDict;
 
 use xbbg_async::engine::{ExtractorType, RequestParams};
 
+fn missing_required_field(field: &str) -> PyErr {
+    PyRuntimeError::new_err(format!("missing required field: {}", field))
+}
+
+fn required_item<T>(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<T>
+where
+    for<'py> T: FromPyObject<'py>,
+{
+    dict.get_item(key)?
+        .ok_or_else(|| missing_required_field(key))?
+        .extract()
+}
+
+fn optional_item<T>(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<T>>
+where
+    for<'py> T: FromPyObject<'py>,
+{
+    dict.get_item(key)?.map(|value| value.extract()).transpose()
+}
+
 /// Convert a Python dictionary to Rust RequestParams.
 pub(crate) fn dict_to_request_params(dict: &Bound<'_, PyDict>) -> PyResult<RequestParams> {
     // Required fields
-    let service: String = dict
-        .get_item("service")?
-        .ok_or_else(|| PyRuntimeError::new_err("missing required field: service"))?
-        .extract()?;
+    let service: String = required_item(dict, "service")?;
 
-    let operation: String = dict
-        .get_item("operation")?
-        .ok_or_else(|| PyRuntimeError::new_err("missing required field: operation"))?
-        .extract()?;
+    let operation: String = required_item(dict, "operation")?;
 
     let (extractor, extractor_set) = match dict.get_item("extractor")? {
         Some(value) => {
@@ -30,102 +44,49 @@ pub(crate) fn dict_to_request_params(dict: &Bound<'_, PyDict>) -> PyResult<Reque
         None => (ExtractorType::default(), false),
     };
 
-    let request_operation: Option<String> = dict
-        .get_item("request_operation")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let request_operation: Option<String> = optional_item(dict, "request_operation")?;
 
     // Optional fields
-    let securities: Option<Vec<String>> = dict
-        .get_item("securities")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let securities: Option<Vec<String>> = optional_item(dict, "securities")?;
 
-    let security: Option<String> = dict
-        .get_item("security")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let security: Option<String> = optional_item(dict, "security")?;
 
-    let fields: Option<Vec<String>> = dict.get_item("fields")?.map(|v| v.extract()).transpose()?;
+    let fields: Option<Vec<String>> = optional_item(dict, "fields")?;
 
-    let overrides: Option<Vec<(String, String)>> = dict
-        .get_item("overrides")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let overrides: Option<Vec<(String, String)>> = optional_item(dict, "overrides")?;
 
-    let elements: Option<Vec<(String, String)>> = dict
-        .get_item("elements")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let elements: Option<Vec<(String, String)>> = optional_item(dict, "elements")?;
 
-    let kwargs: Option<HashMap<String, String>> =
-        dict.get_item("kwargs")?.map(|v| v.extract()).transpose()?;
+    let kwargs: Option<HashMap<String, String>> = optional_item(dict, "kwargs")?;
 
-    let start_date: Option<String> = dict
-        .get_item("start_date")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let start_date: Option<String> = optional_item(dict, "start_date")?;
 
-    let end_date: Option<String> = dict
-        .get_item("end_date")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let end_date: Option<String> = optional_item(dict, "end_date")?;
 
-    let start_datetime: Option<String> = dict
-        .get_item("start_datetime")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let start_datetime: Option<String> = optional_item(dict, "start_datetime")?;
 
-    let end_datetime: Option<String> = dict
-        .get_item("end_datetime")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let end_datetime: Option<String> = optional_item(dict, "end_datetime")?;
 
-    let event_type: Option<String> = dict
-        .get_item("event_type")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let event_type: Option<String> = optional_item(dict, "event_type")?;
 
-    let event_types: Option<Vec<String>> = dict
-        .get_item("event_types")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let event_types: Option<Vec<String>> = optional_item(dict, "event_types")?;
 
-    let interval: Option<u32> = dict
-        .get_item("interval")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let interval: Option<u32> = optional_item(dict, "interval")?;
 
-    let options: Option<Vec<(String, String)>> =
-        dict.get_item("options")?.map(|v| v.extract()).transpose()?;
+    let options: Option<Vec<(String, String)>> = optional_item(dict, "options")?;
 
-    let field_types: Option<HashMap<String, String>> = dict
-        .get_item("field_types")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let field_types: Option<HashMap<String, String>> = optional_item(dict, "field_types")?;
 
-    let include_security_errors: bool = dict
-        .get_item("include_security_errors")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or(false);
+    let include_security_errors: bool =
+        optional_item(dict, "include_security_errors")?.unwrap_or(false);
 
-    let validate_fields: Option<bool> = dict
-        .get_item("validate_fields")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let validate_fields: Option<bool> = optional_item(dict, "validate_fields")?;
 
-    let search_spec: Option<String> = dict
-        .get_item("search_spec")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let search_spec: Option<String> = optional_item(dict, "search_spec")?;
 
-    let field_ids: Option<Vec<String>> = dict
-        .get_item("field_ids")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let field_ids: Option<Vec<String>> = optional_item(dict, "field_ids")?;
 
-    let format: Option<String> = dict.get_item("format")?.map(|v| v.extract()).transpose()?;
+    let format: Option<String> = optional_item(dict, "format")?;
 
     Ok(RequestParams {
         service,

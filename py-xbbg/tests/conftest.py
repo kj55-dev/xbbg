@@ -22,8 +22,18 @@ def _default_blpapi_root() -> str | None:
     if not vendor_root.is_dir():
         return None
 
-    for candidate in sorted(vendor_root.iterdir(), reverse=True):
-        if (candidate / "include").is_dir() and (candidate / "lib").is_dir():
+    def _has_sdk_layout(candidate: Path) -> bool:
+        return (candidate / "include").is_dir() and ((candidate / "lib").is_dir() or (candidate / "Darwin").is_dir())
+
+    def _version_key(candidate: Path) -> tuple[int, ...]:
+        try:
+            return tuple(int(part) for part in candidate.name.split("."))
+        except ValueError:
+            return ()
+
+    candidates = sorted((path for path in vendor_root.iterdir() if path.is_dir()), key=_version_key, reverse=True)
+    for candidate in candidates:
+        if _has_sdk_layout(candidate):
             return str(candidate)
     return None
 

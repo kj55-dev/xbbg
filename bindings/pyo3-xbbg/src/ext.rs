@@ -36,9 +36,41 @@ fn string_refs(values: &[String]) -> Vec<&str> {
     values.iter().map(String::as_str).collect()
 }
 
+fn with_string_refs<T>(values: &[String], f: impl FnOnce(&[&str]) -> T) -> T {
+    let refs = string_refs(values);
+    f(&refs)
+}
+
+fn py_value_error(err: impl std::fmt::Display) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
 fn date_from_parts(year: i32, month: u32, day: u32) -> PyResult<chrono::NaiveDate> {
     chrono::NaiveDate::from_ymd_opt(year, month, day)
         .ok_or_else(|| PyValueError::new_err(format!("invalid date: {year}-{month}-{day}")))
+}
+
+fn record_batch_from_pyarrow(batch: &Bound<'_, PyAny>) -> PyResult<RecordBatch> {
+    RecordBatch::from_pyarrow_bound(batch)
+        .map_err(|err| PyValueError::new_err(format!("invalid RecordBatch: {err}")))
+}
+
+fn parse_yield_type(yield_type: Option<u8>) -> PyResult<Option<YieldType>> {
+    yield_type
+        .map(YieldType::try_from)
+        .transpose()
+        .map_err(py_value_error)
+}
+
+fn static_mapping_dict<'py>(
+    py: Python<'py>,
+    entries: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (key, value) in entries {
+        dict.set_item(key, value)?;
+    }
+    Ok(dict)
 }
 
 macro_rules! register_pyfunctions {
@@ -59,7 +91,7 @@ macro_rules! register_pyfunctions {
 #[pyfunction]
 #[pyo3(signature = (date_str))]
 fn ext_parse_date(date_str: &str) -> PyResult<(i32, u32, u32)> {
-    let d = parse_date(date_str).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let d = parse_date(date_str).map_err(py_value_error)?;
     Ok((d.year(), d.month(), d.day()))
 }
 
@@ -84,13 +116,12 @@ fn ext_fmt_date(year: i32, month: u32, day: u32, fmt: Option<&str>) -> PyResult<
 #[pyfunction]
 fn ext_pivot_to_wide(py: Python<'_>, batch: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     // Convert PyArrow to Rust RecordBatch
-    let rust_batch = RecordBatch::from_pyarrow_bound(batch)
-        .map_err(|e| PyValueError::new_err(format!("invalid RecordBatch: {e}")))?;
+    let rust_batch = record_batch_from_pyarrow(batch)?;
 
     // Release the GIL while running the Arrow transform on owned Rust data.
     let result = py
         .detach(move || pivot_to_wide(&rust_batch))
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(py_value_error)?;
 
     // Convert back to PyArrow
     result
@@ -103,8 +134,7 @@ fn ext_pivot_to_wide(py: Python<'_>, batch: &Bound<'_, PyAny>) -> PyResult<Py<Py
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_is_long_format(py: Python<'_>, batch: &Bound<'_, PyAny>) -> PyResult<bool> {
-    let rust_batch = RecordBatch::from_pyarrow_bound(batch)
-        .map_err(|e| PyValueError::new_err(format!("invalid RecordBatch: {e}")))?;
+    let rust_batch = record_batch_from_pyarrow(batch)?;
     Ok(py.detach(move || is_long_format(&rust_batch)))
 }
 
@@ -118,7 +148,7 @@ fn ext_is_long_format(py: Python<'_>, batch: &Bound<'_, PyAny>) -> PyResult<bool
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_parse_ticker(ticker: &str) -> PyResult<(String, u32, String, Option<String>)> {
-    let parts = parse_ticker_parts(ticker).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let parts = parse_ticker_parts(ticker).map_err(py_value_error)?;
     Ok((parts.prefix, parts.index, parts.asset, parts.exchange))
 }
 
@@ -140,16 +170,14 @@ fn ext_build_futures_ticker(prefix: &str, month_code: &str, year: &str, asset: &
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_normalize_tickers(tickers: Vec<String>) -> Vec<String> {
-    let refs = string_refs(&tickers);
-    normalize_tickers(&refs)
+    with_string_refs(&tickers, normalize_tickers)
 }
 
 /// Filter to equity tickers only.
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_filter_equity_tickers(tickers: Vec<String>) -> Vec<String> {
-    let refs = string_refs(&tickers);
-    filter_equity_tickers(&refs)
+    with_string_refs(&tickers, filter_equity_tickers)
 }
 
 // =============================================================================
@@ -175,8 +203,8 @@ fn ext_generate_futures_candidates(
     use std::str::FromStr;
     let roll_freq = RollFrequency::from_str(freq).unwrap_or(RollFrequency::Monthly);
 
-    let candidates = generate_futures_candidates(gen_ticker, dt, roll_freq, count)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let candidates =
+        generate_futures_candidates(gen_ticker, dt, roll_freq, count).map_err(py_value_error)?;
 
     Ok(candidates
         .into_iter()
@@ -188,14 +216,14 @@ fn ext_generate_futures_candidates(
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_validate_generic_ticker(ticker: &str) -> PyResult<()> {
-    validate_generic_ticker(ticker).map_err(|e| PyValueError::new_err(e.to_string()))
+    validate_generic_ticker(ticker).map_err(py_value_error)
 }
 
 /// Get the contract index from a generic ticker (0-based).
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_contract_index(gen_ticker: &str) -> PyResult<usize> {
-    contract_index(gen_ticker).map_err(|e| PyValueError::new_err(e.to_string()))
+    contract_index(gen_ticker).map_err(py_value_error)
 }
 
 // =============================================================================
@@ -210,7 +238,7 @@ fn ext_contract_index(gen_ticker: &str) -> PyResult<usize> {
 fn ext_parse_cdx_ticker(
     ticker: &str,
 ) -> PyResult<(String, String, String, String, bool, Option<u32>)> {
-    let info = cdx_series_from_ticker(ticker).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let info = cdx_series_from_ticker(ticker).map_err(py_value_error)?;
     Ok((
         info.index,
         info.series,
@@ -225,14 +253,14 @@ fn ext_parse_cdx_ticker(
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_previous_cdx_series(ticker: &str) -> PyResult<Option<String>> {
-    previous_series_ticker(ticker).map_err(|e| PyValueError::new_err(e.to_string()))
+    previous_series_ticker(ticker).map_err(py_value_error)
 }
 
 /// Convert a generic CDX ticker to specific series.
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_cdx_gen_to_specific(gen_ticker: &str, series: u32) -> PyResult<String> {
-    gen_to_specific(gen_ticker, series).map_err(|e| PyValueError::new_err(e.to_string()))
+    gen_to_specific(gen_ticker, series).map_err(py_value_error)
 }
 
 // =============================================================================
@@ -260,8 +288,9 @@ fn ext_same_currency(ccy1: &str, ccy2: &str) -> bool {
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_currencies_needing_conversion(currencies: Vec<String>, target: &str) -> Vec<String> {
-    let refs = string_refs(&currencies);
-    currencies_needing_conversion(&refs, target)
+    with_string_refs(&currencies, |refs| {
+        currencies_needing_conversion(refs, target)
+    })
 }
 
 // =============================================================================
@@ -272,16 +301,14 @@ fn ext_currencies_needing_conversion(currencies: Vec<String>, target: &str) -> V
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_rename_dividend_columns(columns: Vec<String>) -> Vec<(String, String)> {
-    let refs = string_refs(&columns);
-    rename_dividend_columns(&refs)
+    with_string_refs(&columns, rename_dividend_columns)
 }
 
 /// Get ETF holdings column rename mapping.
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_rename_etf_columns(columns: Vec<String>) -> Vec<(String, String)> {
-    let refs = string_refs(&columns);
-    rename_etf_columns(&refs)
+    with_string_refs(&columns, rename_etf_columns)
 }
 
 // =============================================================================
@@ -306,11 +333,10 @@ fn ext_get_month_name(code: &str) -> Option<String> {
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_get_futures_months(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    let dict = PyDict::new(py);
-    for (k, v) in FUTURES_MONTHS.entries() {
-        dict.set_item(*k, *v)?;
-    }
-    Ok(dict)
+    static_mapping_dict(
+        py,
+        FUTURES_MONTHS.entries().map(|(key, value)| (*key, *value)),
+    )
 }
 
 /// Get dividend type field name.
@@ -324,11 +350,7 @@ fn ext_get_dvd_type(typ: &str) -> Option<String> {
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_get_dvd_types(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
-    let dict = PyDict::new(py);
-    for (k, v) in DVD_TYPES.entries() {
-        dict.set_item(*k, *v)?;
-    }
-    Ok(dict)
+    static_mapping_dict(py, DVD_TYPES.entries().map(|(key, value)| (*key, *value)))
 }
 
 // =============================================================================
@@ -398,10 +420,7 @@ fn ext_build_yas_overrides(
     price: Option<f64>,
     benchmark: Option<&str>,
 ) -> PyResult<Vec<(String, String)>> {
-    let yt = match yield_type {
-        Some(v) => Some(YieldType::try_from(v).map_err(|e| PyValueError::new_err(e.to_string()))?),
-        None => None,
-    };
+    let yt = parse_yield_type(yield_type)?;
 
     Ok(build_yas_overrides(
         settle_dt, yt, spread, yield_val, price, benchmark,
@@ -425,8 +444,9 @@ fn ext_build_earning_header_rename(
     header_row: Vec<(String, String)>,
     data_columns: Vec<String>,
 ) -> Vec<(String, String)> {
-    let refs = string_refs(&data_columns);
-    build_earning_header_rename(&header_row, &refs)
+    with_string_refs(&data_columns, |refs| {
+        build_earning_header_rename(&header_row, refs)
+    })
 }
 
 /// Calculate level-based percentages for earnings data.
@@ -460,8 +480,9 @@ fn ext_calculate_level_percentages(
 #[pyfunction]
 #[pyo3(signature = (equity_ticker, extra_fields=vec![]))]
 fn ext_build_preferreds_query(equity_ticker: &str, extra_fields: Vec<String>) -> String {
-    let refs = string_refs(&extra_fields);
-    build_preferreds_query(equity_ticker, &refs)
+    with_string_refs(&extra_fields, |refs| {
+        build_preferreds_query(equity_ticker, refs)
+    })
 }
 
 /// Build a BQL query for corporate bonds.
@@ -482,8 +503,9 @@ fn ext_build_corporate_bonds_query(
     extra_fields: Vec<String>,
     active_only: bool,
 ) -> String {
-    let refs = string_refs(&extra_fields);
-    build_corporate_bonds_query(ticker, ccy, &refs, active_only)
+    with_string_refs(&extra_fields, |refs| {
+        build_corporate_bonds_query(ticker, ccy, refs, active_only)
+    })
 }
 
 /// Build a BQL query for ETF holdings.
@@ -497,8 +519,9 @@ fn ext_build_corporate_bonds_query(
 #[pyfunction]
 #[pyo3(signature = (etf_ticker, extra_fields=vec![]))]
 fn ext_build_etf_holdings_query(etf_ticker: &str, extra_fields: Vec<String>) -> String {
-    let refs = string_refs(&extra_fields);
-    build_etf_holdings_query(etf_ticker, &refs)
+    with_string_refs(&extra_fields, |refs| {
+        build_etf_holdings_query(etf_ticker, refs)
+    })
 }
 
 // =============================================================================

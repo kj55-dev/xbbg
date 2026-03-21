@@ -7,13 +7,45 @@ use chrono::NaiveDate;
 use crate::error::{ExtError, Result};
 
 /// Supported date formats for parsing.
+const DEFAULT_DATE_FORMAT: &str = "%Y%m%d";
+const ISO_DATE_FORMAT: &str = "%Y-%m-%d";
+const ISO_DATETIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
+
 const DATE_FORMATS: &[&str] = &[
-    "%Y-%m-%d", // 2024-01-15
-    "%Y%m%d",   // 20240115
-    "%Y/%m/%d", // 2024/01/15
-    "%d-%m-%Y", // 15-01-2024
-    "%d/%m/%Y", // 15/01/2024
+    ISO_DATE_FORMAT,     // 2024-01-15
+    DEFAULT_DATE_FORMAT, // 20240115
+    "%Y/%m/%d",          // 2024/01/15
+    "%d-%m-%Y",          // 15-01-2024
+    "%d/%m/%Y",          // 15/01/2024
 ];
+
+fn parse_with_format(s: &str, fmt: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(s, fmt).ok()
+}
+
+fn local_naive_datetime() -> chrono::NaiveDateTime {
+    chrono::Local::now().naive_local()
+}
+
+fn yesterday_local_date() -> chrono::NaiveDate {
+    local_naive_datetime().date() - chrono::Duration::days(1)
+}
+
+fn fast_date_format(s: &str) -> Option<&'static str> {
+    match s.len() {
+        8 => Some(DEFAULT_DATE_FORMAT),
+        10 => match s.as_bytes().get(4) {
+            Some(b'-') => Some(ISO_DATE_FORMAT),
+            Some(b'/') => Some("%Y/%m/%d"),
+            _ => match s.as_bytes().get(2) {
+                Some(b'-') => Some("%d-%m-%Y"),
+                Some(b'/') => Some("%d/%m/%Y"),
+                _ => None,
+            },
+        },
+        _ => None,
+    }
+}
 
 /// Parse a date string into a `NaiveDate`.
 ///
@@ -43,40 +75,15 @@ const DATE_FORMATS: &[&str] = &[
 pub fn parse_date(s: &str) -> Result<NaiveDate> {
     let s = s.trim();
 
-    // Fast path: check length to narrow down formats
-    match s.len() {
-        8 => {
-            // YYYYMMDD format
-            if let Ok(d) = NaiveDate::parse_from_str(s, "%Y%m%d") {
-                return Ok(d);
-            }
+    if let Some(fmt) = fast_date_format(s) {
+        if let Some(d) = parse_with_format(s, fmt) {
+            return Ok(d);
         }
-        10 => {
-            // Most common: YYYY-MM-DD or YYYY/MM/DD
-            if s.as_bytes()[4] == b'-' {
-                if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-                    return Ok(d);
-                }
-            } else if s.as_bytes()[4] == b'/' {
-                if let Ok(d) = NaiveDate::parse_from_str(s, "%Y/%m/%d") {
-                    return Ok(d);
-                }
-            } else if s.as_bytes()[2] == b'-' {
-                if let Ok(d) = NaiveDate::parse_from_str(s, "%d-%m-%Y") {
-                    return Ok(d);
-                }
-            } else if s.as_bytes()[2] == b'/' {
-                if let Ok(d) = NaiveDate::parse_from_str(s, "%d/%m/%Y") {
-                    return Ok(d);
-                }
-            }
-        }
-        _ => {}
     }
 
     // Fallback: try all formats
     for fmt in DATE_FORMATS {
-        if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
+        if let Some(d) = parse_with_format(s, fmt) {
             return Ok(d);
         }
     }
@@ -103,7 +110,7 @@ pub fn parse_date(s: &str) -> Result<NaiveDate> {
 /// assert_eq!(fmt_date(d, Some("%Y-%m-%d")), "2024-01-15");
 /// ```
 pub fn fmt_date(date: NaiveDate, fmt: Option<&str>) -> String {
-    date.format(fmt.unwrap_or("%Y%m%d")).to_string()
+    date.format(fmt.unwrap_or(DEFAULT_DATE_FORMAT)).to_string()
 }
 
 /// Try to parse a date, returning None if parsing fails.
@@ -137,10 +144,8 @@ pub fn default_turnover_dates(
     end_date: Option<&str>,
 ) -> (String, String) {
     let end = match end_date {
-        Some(s) => try_parse_date(s).unwrap_or_else(|| {
-            chrono::Local::now().naive_local().date() - chrono::Duration::days(1)
-        }),
-        None => chrono::Local::now().naive_local().date() - chrono::Duration::days(1),
+        Some(s) => try_parse_date(s).unwrap_or_else(yesterday_local_date),
+        None => yesterday_local_date(),
     };
 
     let start = match start_date {
@@ -149,8 +154,8 @@ pub fn default_turnover_dates(
     };
 
     (
-        fmt_date(start, Some("%Y-%m-%d")),
-        fmt_date(end, Some("%Y-%m-%d")),
+        fmt_date(start, Some(ISO_DATE_FORMAT)),
+        fmt_date(end, Some(ISO_DATE_FORMAT)),
     )
 }
 
@@ -184,9 +189,8 @@ pub fn default_bqr_datetimes(
 ) -> (String, String) {
     let end_str = match end_datetime {
         Some(s) => normalize_datetime_str(s),
-        None => chrono::Local::now()
-            .naive_local()
-            .format("%Y-%m-%dT%H:%M:%S")
+        None => local_naive_datetime()
+            .format(ISO_DATETIME_FORMAT)
             .to_string(),
     };
 
@@ -194,10 +198,10 @@ pub fn default_bqr_datetimes(
         Some(s) => normalize_datetime_str(s),
         None => {
             // Parse end_str back to compute 1 hour before
-            let end_dt = chrono::NaiveDateTime::parse_from_str(&end_str, "%Y-%m-%dT%H:%M:%S")
-                .unwrap_or_else(|_| chrono::Local::now().naive_local());
+            let end_dt = chrono::NaiveDateTime::parse_from_str(&end_str, ISO_DATETIME_FORMAT)
+                .unwrap_or_else(|_| local_naive_datetime());
             let start_dt = end_dt - chrono::Duration::hours(1);
-            start_dt.format("%Y-%m-%dT%H:%M:%S").to_string()
+            start_dt.format(ISO_DATETIME_FORMAT).to_string()
         }
     };
 

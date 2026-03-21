@@ -82,6 +82,11 @@ impl Event {
     /// ```
     #[inline]
     pub fn messages(&self) -> MessageIterator<'_> {
+        self.message_iterator()
+    }
+
+    #[inline]
+    fn message_iterator(&self) -> MessageIterator<'_> {
         // SAFETY: blpapi_MessageIterator_create returns valid iterator or null.
         // The iterator is valid for the lifetime of the event.
         // We pass ownership of the iterator pointer to MessageIterator.
@@ -99,7 +104,7 @@ impl Event {
     /// Prefer `messages()` for clarity in new code.
     #[inline]
     pub fn iter(&self) -> MessageIterator<'_> {
-        self.messages()
+        self.message_iterator()
     }
 
     /// Get raw pointer (internal use).
@@ -169,55 +174,50 @@ pub enum EventType {
     Unknown(i32),
 }
 
-impl EventType {
-    /// Convert from raw Bloomberg integer.
-    ///
-    /// Maps Bloomberg's event type constants to our enum.
-    /// Unknown values are wrapped in `Unknown(i32)`.
-    #[inline]
-    pub fn from_raw(v: i32) -> Self {
-        match v {
-            1 => Self::Admin,
-            2 => Self::SessionStatus,
-            3 => Self::SubscriptionStatus,
-            4 => Self::RequestStatus,
-            5 => Self::Response,
-            6 => Self::PartialResponse,
-            8 => Self::SubscriptionData,
-            9 => Self::ServiceStatus,
-            10 => Self::Timeout,
-            11 => Self::AuthorizationStatus,
-            12 => Self::ResolutionStatus,
-            13 => Self::TopicStatus,
-            14 => Self::TokenStatus,
-            15 => Self::Request,
-            _ => Self::Unknown(v),
+macro_rules! event_type_conversions {
+    ($($raw:expr => $variant:ident),+ $(,)?) => {
+        /// Convert from raw Bloomberg integer.
+        ///
+        /// Maps Bloomberg's event type constants to our enum.
+        /// Unknown values are wrapped in `Unknown(i32)`.
+        #[inline]
+        pub fn from_raw(v: i32) -> Self {
+            match v {
+                $( $raw => Self::$variant, )+
+                _ => Self::Unknown(v),
+            }
         }
-    }
 
-    /// Convert to raw Bloomberg integer.
-    ///
-    /// Returns the integer value that Bloomberg's C API uses.
-    #[inline]
-    pub fn to_raw(&self) -> i32 {
-        match self {
-            Self::Admin => 1,
-            Self::SessionStatus => 2,
-            Self::SubscriptionStatus => 3,
-            Self::RequestStatus => 4,
-            Self::Response => 5,
-            Self::PartialResponse => 6,
-            Self::SubscriptionData => 8,
-            Self::ServiceStatus => 9,
-            Self::Timeout => 10,
-            Self::AuthorizationStatus => 11,
-            Self::ResolutionStatus => 12,
-            Self::TopicStatus => 13,
-            Self::TokenStatus => 14,
-            Self::Request => 15,
-            Self::Unknown(v) => *v,
+        /// Convert to raw Bloomberg integer.
+        ///
+        /// Returns the integer value that Bloomberg's C API uses.
+        #[inline]
+        pub fn to_raw(&self) -> i32 {
+            match self {
+                $( Self::$variant => $raw, )+
+                Self::Unknown(v) => *v,
+            }
         }
-    }
+    };
+}
+
+impl EventType {
+    event_type_conversions!(
+        1 => Admin,
+        2 => SessionStatus,
+        3 => SubscriptionStatus,
+        4 => RequestStatus,
+        5 => Response,
+        6 => PartialResponse,
+        8 => SubscriptionData,
+        9 => ServiceStatus,
+        10 => Timeout,
+        11 => AuthorizationStatus,
+        12 => ResolutionStatus,
+        13 => TopicStatus,
+        14 => TokenStatus,
+        15 => Request,
+    );
 }
 
 /// Iterator over messages in an event.

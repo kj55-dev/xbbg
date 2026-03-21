@@ -62,6 +62,49 @@ fn apply_named_request_parameter(
     Ok(())
 }
 
+fn parse_ref_data_long_mode(format: Option<&str>) -> LongMode {
+    match format {
+        Some("long_typed" | "typed") => LongMode::Typed,
+        Some("long_metadata" | "metadata" | "with_metadata") => LongMode::WithMetadata,
+        _ => LongMode::String,
+    }
+}
+
+fn parse_hist_data_format(format: Option<&str>) -> (OutputFormat, LongMode) {
+    match format {
+        Some("wide") => (OutputFormat::Wide, LongMode::String),
+        Some("long_typed" | "typed") => (OutputFormat::Long, LongMode::Typed),
+        Some("long_metadata" | "metadata" | "with_metadata") => {
+            (OutputFormat::Long, LongMode::WithMetadata)
+        }
+        _ => (OutputFormat::Long, LongMode::String),
+    }
+}
+
+fn has_extra_elements(params: &RequestParams) -> bool {
+    params
+        .elements
+        .as_ref()
+        .is_some_and(|elements| !elements.is_empty())
+}
+
+fn append_request_values<F>(
+    request: &mut xbbg_core::Request,
+    element: &str,
+    values: &[String],
+    mut trace_value: F,
+) -> Result<(), BlpError>
+where
+    F: FnMut(&str),
+{
+    for value in values {
+        trace_value(value);
+        request.append_str(element, value)?;
+    }
+
+    Ok(())
+}
+
 /// Commands sent to a request worker.
 pub enum WorkerCommand {
     /// Execute a request and send result via oneshot channel.
@@ -372,14 +415,7 @@ impl RequestWorker {
             "cancelled Bloomberg request"
         );
 
-        self.send_times.remove(&key);
-        self.warned_requests.remove(&key);
-        self.cancellations.remove(&key);
-
-        if self.requests.contains(key) {
-            let state = self.requests.remove(key);
-            drop(state);
-        }
+        let _ = self.take_pending_request(key);
     }
 
     fn ensure_service(&mut self, name: &str) -> Result<(), BlpError> {
@@ -504,11 +540,7 @@ impl RequestWorker {
         })();
 
         if let Err(err) = result {
-            if self.requests.contains(key) {
-                self.requests.remove(key).fail(err);
-            }
-            self.send_times.remove(&key);
-            self.cancellations.remove(&key);
+            self.fail_pending_request(key, err);
             return Ok(());
         }
         Ok(())
@@ -524,39 +556,16 @@ impl RequestWorker {
         let field_types = params.field_types.clone();
 
         let state = match params.extractor {
-            ExtractorType::RefData => {
-                let long_mode = params
-                    .format
-                    .as_deref()
-                    .map(|s| match s {
-                        "long_typed" | "typed" => LongMode::Typed,
-                        "long_metadata" | "metadata" | "with_metadata" => LongMode::WithMetadata,
-                        _ => LongMode::String,
-                    })
-                    .unwrap_or(LongMode::String);
-                UnifiedRequestState::RefData(RefDataState::with_format(
-                    fields,
-                    OutputFormat::Long,
-                    long_mode,
-                    field_types,
-                    params.include_security_errors,
-                    reply,
-                ))
-            }
+            ExtractorType::RefData => UnifiedRequestState::RefData(RefDataState::with_format(
+                fields,
+                OutputFormat::Long,
+                parse_ref_data_long_mode(params.format.as_deref()),
+                field_types,
+                params.include_security_errors,
+                reply,
+            )),
             ExtractorType::HistData => {
-                // Parse format parameter for long/wide mode
-                let (output_format, long_mode) = params
-                    .format
-                    .as_deref()
-                    .map(|s| match s {
-                        "wide" => (OutputFormat::Wide, LongMode::String),
-                        "long_typed" | "typed" => (OutputFormat::Long, LongMode::Typed),
-                        "long_metadata" | "metadata" | "with_metadata" => {
-                            (OutputFormat::Long, LongMode::WithMetadata)
-                        }
-                        _ => (OutputFormat::Long, LongMode::String),
-                    })
-                    .unwrap_or((OutputFormat::Long, LongMode::String));
+                let (output_format, long_mode) = parse_hist_data_format(params.format.as_deref());
                 UnifiedRequestState::HistData(HistDataState::with_format(
                     fields,
                     output_format,
@@ -575,7 +584,7 @@ impl RequestWorker {
             ExtractorType::FieldInfo => UnifiedRequestState::FieldInfo(FieldInfoState::new(reply)),
             ExtractorType::IntradayBar => {
                 // If user specified extra elements, use GENERIC extractor
-                if params.elements.as_ref().is_some_and(|e| !e.is_empty()) {
+                if has_extra_elements(params) {
                     UnifiedRequestState::Generic(GenericState::new(reply))
                 } else {
                     let ticker = params.security.clone().unwrap_or_default();
@@ -592,7 +601,7 @@ impl RequestWorker {
             ExtractorType::IntradayTick => {
                 // If user specified extra elements (e.g., includeConditionCodes=true),
                 // use GENERIC extractor for dynamic column discovery
-                if params.elements.as_ref().is_some_and(|e| !e.is_empty()) {
+                if has_extra_elements(params) {
                     UnifiedRequestState::Generic(GenericState::new(reply))
                 } else {
                     let ticker = params.security.clone().unwrap_or_default();
@@ -681,10 +690,7 @@ impl RequestWorker {
         })();
 
         if let Err(err) = result {
-            if self.requests.contains(key) {
-                self.requests.remove(key).fail(err);
-            }
-            self.send_times.remove(&key);
+            self.fail_pending_request(key, err);
             return Ok(());
         }
 
@@ -702,12 +708,10 @@ impl RequestWorker {
         let mut request = service.create_request(operation)?;
         xbbg_log::trace!("request created");
 
-        // Set securities (multi or single)
         if let Some(ref securities) = params.securities {
-            for sec in securities {
+            append_request_values(&mut request, "securities", securities, |sec| {
                 xbbg_log::trace!(element = "securities", value = %sec, "appending");
-                request.append_str("securities", sec)?;
-            }
+            })?;
         }
         if let Some(ref security) = params.security {
             // For intraday requests, "security" is a scalar element (use set_str)
@@ -724,12 +728,10 @@ impl RequestWorker {
             }
         }
 
-        // Set fields
         if let Some(ref fields) = params.fields {
-            for field in fields {
+            append_request_values(&mut request, "fields", fields, |field| {
                 xbbg_log::trace!(element = "fields", value = %field, "appending");
-                request.append_str("fields", field)?;
-            }
+            })?;
         }
 
         // Set date range (for historical) - scalar elements use set_str
@@ -752,16 +754,17 @@ impl RequestWorker {
             request.set_datetime("endDateTime", end)?;
         }
 
-        // Set event type (singular, for intraday bars)
         if let Some(ref event_type) = params.event_type {
             request.set_str("eventType", event_type)?;
         }
-        // Set event types (array, for intraday ticks)
         if let Some(ref event_types) = params.event_types {
-            for et in event_types {
-                xbbg_log::trace!(element = "eventTypes", value = %et, "appending event type");
-                request.append_str("eventTypes", et)?;
-            }
+            append_request_values(&mut request, "eventTypes", event_types, |event_type| {
+                xbbg_log::trace!(
+                    element = "eventTypes",
+                    value = %event_type,
+                    "appending event type"
+                );
+            })?;
         }
         // Set interval (for intraday bars)
         if let Some(interval) = params.interval {
@@ -775,11 +778,8 @@ impl RequestWorker {
             apply_named_request_parameter(&mut request, name, value)?;
         }
 
-        // Set apiflds field IDs
         if let Some(ref field_ids) = params.field_ids {
-            for id in field_ids {
-                request.append_str("id", id)?;
-            }
+            append_request_values(&mut request, "id", field_ids, |_| {})?;
         }
 
         // Set overrides (fieldId/value pairs on the "overrides" sequence element)
@@ -860,7 +860,6 @@ impl RequestWorker {
                 };
                 let key = dispatch_key.to_slab_key();
                 if self.requests.contains(key) {
-                    // Log round-trip time and clean up tracking
                     if let Some(t_send) = self.send_times.remove(&key) {
                         let rtt_ms = t_send.elapsed().as_micros() as f64 / 1000.0;
                         xbbg_log::debug!(
@@ -870,10 +869,9 @@ impl RequestWorker {
                             "bloomberg_roundtrip"
                         );
                     }
-                    self.warned_requests.remove(&key);
-                    self.cancellations.remove(&key);
-                    let state = self.requests.remove(key);
-                    state.finish_and_reply(msg);
+                    if let Some(state) = self.take_pending_request(key) {
+                        state.finish_and_reply(msg);
+                    }
                     xbbg_log::debug!(worker_id = self.id, key = key, "response completed");
                 }
             }
@@ -893,16 +891,12 @@ impl RequestWorker {
                 let key = dispatch_key.to_slab_key();
                 if msg_type == "RequestFailure" {
                     xbbg_log::error!(worker_id = self.id, key = key, "request failed");
-                    if self.requests.contains(key) {
-                        // Clean up tracking
-                        self.send_times.remove(&key);
-                        self.warned_requests.remove(&key);
-                        self.cancellations.remove(&key);
-                        let state = self.requests.remove(key);
-                        state.fail(BlpError::Internal {
+                    self.fail_pending_request(
+                        key,
+                        BlpError::Internal {
                             detail: "RequestFailure".into(),
-                        });
-                    }
+                        },
+                    );
                 }
             }
         }
@@ -916,13 +910,12 @@ impl RequestWorker {
 
         let keys: Vec<SlabKey> = self.requests.iter().map(|(k, _)| k).collect();
         for key in keys {
-            self.send_times.remove(&key);
-            self.warned_requests.remove(&key);
-            self.cancellations.remove(&key);
-            let state = self.requests.remove(key);
-            state.fail(BlpError::Internal {
-                detail: format!("{} (worker={})", reason, self.id),
-            });
+            self.fail_pending_request(
+                key,
+                BlpError::Internal {
+                    detail: format!("{} (worker={})", reason, self.id),
+                },
+            );
         }
 
         xbbg_log::error!(
@@ -962,6 +955,27 @@ impl RequestWorker {
         let msg_type_name = msg.message_type();
         let msg_type = msg_type_name.as_str();
         xbbg_log::debug!(worker_id = self.id, msg_type = msg_type, "service status");
+    }
+
+    fn clear_request_tracking(&mut self, key: SlabKey) {
+        self.send_times.remove(&key);
+        self.warned_requests.remove(&key);
+        self.cancellations.remove(&key);
+    }
+
+    fn take_pending_request(&mut self, key: SlabKey) -> Option<UnifiedRequestState> {
+        self.clear_request_tracking(key);
+        if self.requests.contains(key) {
+            Some(self.requests.remove(key))
+        } else {
+            None
+        }
+    }
+
+    fn fail_pending_request(&mut self, key: SlabKey, error: BlpError) {
+        if let Some(state) = self.take_pending_request(key) {
+            state.fail(error);
+        }
     }
 }
 
@@ -1089,5 +1103,55 @@ mod tests {
                 ("adjustmentNormal", "true"),
             ]
         );
+    }
+
+    #[test]
+    fn parse_ref_data_long_mode_maps_supported_values() {
+        assert_eq!(parse_ref_data_long_mode(None), LongMode::String);
+        assert_eq!(parse_ref_data_long_mode(Some("typed")), LongMode::Typed);
+        assert_eq!(
+            parse_ref_data_long_mode(Some("with_metadata")),
+            LongMode::WithMetadata
+        );
+        assert_eq!(
+            parse_ref_data_long_mode(Some("unexpected")),
+            LongMode::String
+        );
+    }
+
+    #[test]
+    fn parse_hist_data_format_maps_supported_values() {
+        assert_eq!(
+            parse_hist_data_format(None),
+            (OutputFormat::Long, LongMode::String)
+        );
+        assert_eq!(
+            parse_hist_data_format(Some("wide")),
+            (OutputFormat::Wide, LongMode::String)
+        );
+        assert_eq!(
+            parse_hist_data_format(Some("typed")),
+            (OutputFormat::Long, LongMode::Typed)
+        );
+        assert_eq!(
+            parse_hist_data_format(Some("metadata")),
+            (OutputFormat::Long, LongMode::WithMetadata)
+        );
+    }
+
+    #[test]
+    fn has_extra_elements_detects_non_empty_optional_elements() {
+        let empty = RequestParams {
+            elements: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(!has_extra_elements(&empty));
+
+        let populated = RequestParams {
+            elements: Some(vec![("foo".to_string(), "bar".to_string())]),
+            ..Default::default()
+        };
+        assert!(has_extra_elements(&populated));
+        assert!(!has_extra_elements(&RequestParams::default()));
     }
 }

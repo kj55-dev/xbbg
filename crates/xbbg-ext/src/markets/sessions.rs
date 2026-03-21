@@ -51,20 +51,25 @@ fn exchanges() -> Option<&'static ExchangesToml> {
         .ok()
 }
 
+fn normalized_key(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn lookup_rule<'a>(
+    rules: &'a HashMap<String, MarketRule>,
+    key: Option<&str>,
+) -> Option<&'a MarketRule> {
+    normalized_key(key).and_then(|key| rules.get(key))
+}
+
+fn time_str(time: (i32, i32)) -> String {
+    format_time(time.0, time.1)
+}
+
 /// Look up a MarketRule by MIC code, then fallback to exchange code.
 pub fn get_market_rule(mic: Option<&str>, exch_code: Option<&str>) -> Option<&'static MarketRule> {
     let data = exchanges()?;
-    if let Some(mic_code) = mic.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(rule) = data.mic.get(mic_code) {
-            return Some(rule);
-        }
-    }
-    if let Some(code) = exch_code.map(str::trim).filter(|s| !s.is_empty()) {
-        if let Some(rule) = data.exch_code.get(code) {
-            return Some(rule);
-        }
-    }
-    None
+    lookup_rule(&data.mic, mic).or_else(|| lookup_rule(&data.exch_code, exch_code))
 }
 
 /// Infer IANA timezone from country ISO code.
@@ -88,11 +93,12 @@ pub fn derive_sessions(
         return SessionWindows::default();
     };
 
-    let day_start_str = format_time(day_start_tm.0, day_start_tm.1);
-    let day_end_str = format_time(day_end_tm.0, day_end_tm.1);
+    let day_start_str = time_str(day_start_tm);
+    let day_end_str = time_str(day_end_tm);
+    let day = (day_start_str.clone(), day_end_str.clone());
 
     let mut windows = SessionWindows {
-        day: Some((day_start_str.clone(), day_end_str.clone())),
+        day: Some(day.clone()),
         ..SessionWindows::default()
     };
 
@@ -104,16 +110,13 @@ pub fn derive_sessions(
 
         if rule.pre_minutes > 0 {
             let pre_start = add_minutes(day_start_tm, -rule.pre_minutes);
-            windows.pre = Some((format_time(pre_start.0, pre_start.1), day_start_str.clone()));
+            windows.pre = Some((time_str(pre_start), day_start_str.clone()));
         }
 
         if rule.post_minutes > 0 {
             let post_start = add_minutes(day_end_tm, 1);
             let post_end = add_minutes(day_end_tm, rule.post_minutes);
-            windows.post = Some((
-                format_time(post_start.0, post_start.1),
-                format_time(post_end.0, post_end.1),
-            ));
+            windows.post = Some((time_str(post_start), time_str(post_end)));
         }
 
         let allday_start = windows
@@ -131,11 +134,11 @@ pub fn derive_sessions(
         if let (Some(lunch_start), Some(lunch_end)) = (rule.lunch_start_min, rule.lunch_end_min) {
             let am_end = add_minutes(day_start_tm, lunch_start);
             let pm_start = add_minutes(day_start_tm, lunch_end);
-            windows.am = Some((day_start_str, format_time(am_end.0, am_end.1)));
-            windows.pm = Some((format_time(pm_start.0, pm_start.1), day_end_str));
+            windows.am = Some((day_start_str, time_str(am_end)));
+            windows.pm = Some((time_str(pm_start), day_end_str));
         }
     } else {
-        windows.allday = windows.day.clone();
+        windows.allday = Some(day);
     }
 
     windows
@@ -182,6 +185,15 @@ mod tests {
     #[test]
     fn test_load_toml() {
         let rule = get_market_rule(Some("XNYS"), None);
+        assert!(rule.is_some());
+        let rule = rule.unwrap();
+        assert_eq!(rule.pre_minutes, 330);
+        assert_eq!(rule.post_minutes, 240);
+    }
+
+    #[test]
+    fn test_get_market_rule_trims_lookup_keys() {
+        let rule = get_market_rule(Some("  XNYS "), Some("  US "));
         assert!(rule.is_some());
         let rule = rule.unwrap();
         assert_eq!(rule.pre_minutes, 330);

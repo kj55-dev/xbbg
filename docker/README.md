@@ -30,7 +30,7 @@ podman run --rm \
   -e BLPAPI_BINDINGS_EXPORT_PATH=/work/target/ci-bindings/bindings.rs \
   xbbg-ci:local \
   bash -lc '
-    BLPAPI_VERSION=3.25.12.1
+    BLPAPI_VERSION=<version>
     mkdir -p /tmp/blpapi
     curl -sSL "https://blpapi.bloomberg.com/download/releases/raw/files/blpapi_cpp_${BLPAPI_VERSION}-linux.tar.gz" \
       | tar -xz -C /tmp/blpapi --strip-components=1
@@ -50,7 +50,7 @@ podman run --rm \
   -w /work \
   xbbg-ci:local \
   bash -lc '
-    BLPAPI_VERSION=3.25.12.1
+    BLPAPI_VERSION=<version>
     mkdir -p /tmp/blpapi
     curl -sSL "https://blpapi.bloomberg.com/download/releases/raw/files/blpapi_cpp_${BLPAPI_VERSION}-linux.tar.gz" \
       | tar -xz -C /tmp/blpapi --strip-components=1

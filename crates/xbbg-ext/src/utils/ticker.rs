@@ -16,6 +16,10 @@ pub struct TickerParts {
     pub exchange: Option<String>,
 }
 
+fn invalid_ticker(ticker: &str) -> ExtError {
+    ExtError::InvalidTicker(ticker.to_string())
+}
+
 /// Parse a Bloomberg ticker into its component parts.
 ///
 /// Handles various ticker formats:
@@ -39,25 +43,11 @@ pub struct TickerParts {
 /// Returns `ExtError::InvalidTicker` if the ticker format is not recognized.
 pub fn parse_ticker_parts(ticker: &str) -> Result<TickerParts> {
     let parts: Vec<&str> = ticker.split_whitespace().collect();
+    let (asset, head) = parts.split_last().ok_or_else(|| invalid_ticker(ticker))?;
 
-    if parts.is_empty() {
-        return Err(ExtError::InvalidTicker(ticker.to_string()));
-    }
-
-    let asset = parts
-        .last()
-        .copied()
-        .ok_or_else(|| ExtError::InvalidTicker(ticker.to_string()))?;
-
-    match asset {
+    match *asset {
         "Index" | "Curncy" | "Comdty" | "Corp" => {
-            // Format: PREFIX1 Asset (e.g., "ES1 Index")
-            if parts.len() < 2 {
-                return Err(ExtError::InvalidTicker(ticker.to_string()));
-            }
-
-            let base = parts[..parts.len() - 1].join(" ");
-            let (prefix, index) = parse_prefix_index(&base)?;
+            let (prefix, index) = parse_prefix_index(&head.join(" "))?;
 
             Ok(TickerParts {
                 prefix,
@@ -68,48 +58,39 @@ pub fn parse_ticker_parts(ticker: &str) -> Result<TickerParts> {
         }
         "Equity" => {
             // Format: PREFIX1 EXCHANGE Equity (e.g., "SPY1 US Equity")
-            if parts.len() < 3 {
-                return Err(ExtError::InvalidTicker(ticker.to_string()));
+            if head.len() < 2 {
+                return Err(invalid_ticker(ticker));
             }
 
-            let base = parts[0];
-            let exchange = parts[1..parts.len() - 1].join(" ");
+            let (base, exchange_parts) =
+                head.split_first().ok_or_else(|| invalid_ticker(ticker))?;
             let (prefix, index) = parse_prefix_index(base)?;
 
             Ok(TickerParts {
                 prefix,
                 index,
                 asset: asset.to_string(),
-                exchange: Some(exchange),
+                exchange: Some(exchange_parts.join(" ")),
             })
         }
-        _ => Err(ExtError::InvalidTicker(ticker.to_string())),
+        _ => Err(invalid_ticker(ticker)),
     }
 }
 
 /// Parse prefix and index from a base ticker string (e.g., "ES1" -> ("ES", 1)).
 fn parse_prefix_index(base: &str) -> Result<(String, u32)> {
-    // Find the last digit
     let base_bytes = base.as_bytes();
-    let mut digit_pos = None;
-
-    for (i, &b) in base_bytes.iter().enumerate().rev() {
-        if b.is_ascii_digit() {
-            digit_pos = Some(i);
-            break;
-        }
-    }
-
-    let digit_pos = digit_pos.ok_or_else(|| ExtError::InvalidTicker(base.to_string()))?;
+    let digit_pos = base_bytes
+        .iter()
+        .rposition(|b| b.is_ascii_digit())
+        .ok_or_else(|| invalid_ticker(base))?;
 
     let prefix = &base[..digit_pos];
     let index_str = &base[digit_pos..digit_pos + 1];
-    let index: u32 = index_str
-        .parse()
-        .map_err(|_| ExtError::InvalidTicker(base.to_string()))?;
+    let index: u32 = index_str.parse().map_err(|_| invalid_ticker(base))?;
 
     if prefix.is_empty() {
-        return Err(ExtError::InvalidTicker(base.to_string()));
+        return Err(invalid_ticker(base));
     }
 
     Ok((prefix.to_string(), index))
@@ -152,17 +133,14 @@ pub fn is_specific_contract(ticker: &str) -> bool {
     //   "ES1"   -> no valid month code before '1'       -> generic
 
     // Count trailing digits
-    let mut digit_count = 0;
-    for &b in bytes.iter().rev() {
-        if b.is_ascii_digit() {
-            digit_count += 1;
-        } else {
-            break;
-        }
-    }
+    let digit_count = bytes
+        .iter()
+        .rev()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
 
     // Need exactly 1 or 2 trailing digits
-    if digit_count == 0 || digit_count > 2 {
+    if !(1..=2).contains(&digit_count) {
         return false;
     }
 
@@ -205,7 +183,7 @@ pub fn is_specific_contract(ticker: &str) -> bool {
 /// assert_eq!(multi.len(), 2);
 /// ```
 pub fn normalize_tickers(tickers: &[&str]) -> Vec<String> {
-    tickers.iter().map(|s| s.to_string()).collect()
+    tickers.iter().copied().map(str::to_owned).collect()
 }
 
 /// Build a futures ticker from components.
@@ -235,8 +213,9 @@ pub fn build_futures_ticker(prefix: &str, month_code: &str, year: &str, asset: &
 pub fn filter_equity_tickers(tickers: &[&str]) -> Vec<String> {
     tickers
         .iter()
-        .filter(|t| t.contains("Equity") && !t.contains('='))
-        .map(|s| s.to_string())
+        .copied()
+        .filter(|ticker| ticker.contains("Equity") && !ticker.contains('='))
+        .map(str::to_owned)
         .collect()
 }
 

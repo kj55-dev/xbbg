@@ -37,6 +37,48 @@ struct ExchangeInfoDict {
 impl_stub_type!(MarketRuleDict = pyo3::types::PyAny);
 impl_stub_type!(ExchangeInfoDict = pyo3::types::PyAny);
 
+fn py_value_error(err: impl std::fmt::Display) -> PyErr {
+    PyValueError::new_err(err.to_string())
+}
+
+impl From<&sessions::MarketRule> for MarketRuleDict {
+    fn from(rule: &sessions::MarketRule) -> Self {
+        Self {
+            pre_minutes: rule.pre_minutes,
+            post_minutes: rule.post_minutes,
+            lunch_start_min: rule.lunch_start_min,
+            lunch_end_min: rule.lunch_end_min,
+            is_continuous: rule.is_continuous,
+        }
+    }
+}
+
+impl From<ExchangeInfo> for ExchangeInfoDict {
+    fn from(info: ExchangeInfo) -> Self {
+        Self {
+            ticker: info.ticker,
+            mic: info.mic,
+            exch_code: info.exch_code,
+            timezone: info.timezone,
+            utc_offset: info.utc_offset,
+            source: info.source.as_str().to_string(),
+            day: info.sessions.day,
+            allday: info.sessions.allday,
+            pre: info.sessions.pre,
+            post: info.sessions.post,
+            am: info.sessions.am,
+            pm: info.sessions.pm,
+        }
+    }
+}
+
+macro_rules! register_pyfunctions {
+    ($module:expr; $($func:ident),+ $(,)?) => {{
+        $( $module.add_function(wrap_pyfunction!($func, $module)?)?; )+
+        Ok(())
+    }};
+}
+
 /// Derive session windows from regular trading hours.
 ///
 /// Returns dict with keys: day, allday, pre, post, am, pm.
@@ -79,14 +121,7 @@ fn ext_derive_sessions(
 #[gen_stub_pyfunction]
 #[pyfunction]
 fn ext_get_market_rule(mic: Option<&str>, exch_code: Option<&str>) -> Option<MarketRuleDict> {
-    let rule = sessions::get_market_rule(mic, exch_code)?;
-    Some(MarketRuleDict {
-        pre_minutes: rule.pre_minutes,
-        post_minutes: rule.post_minutes,
-        lunch_start_min: rule.lunch_start_min,
-        lunch_end_min: rule.lunch_end_min,
-        is_continuous: rule.is_continuous,
-    })
+    sessions::get_market_rule(mic, exch_code).map(MarketRuleDict::from)
 }
 
 /// Infer timezone from country ISO code.
@@ -150,7 +185,7 @@ fn ext_set_exchange_override(
         sessions,
     };
 
-    markets::set_exchange_override(ticker, patch).map_err(|e| PyValueError::new_err(e.to_string()))
+    markets::set_exchange_override(ticker, patch).map_err(py_value_error)
 }
 
 /// Get runtime override for a ticker.
@@ -158,8 +193,8 @@ fn ext_set_exchange_override(
 #[pyfunction]
 fn ext_get_exchange_override(ticker: &str) -> PyResult<Option<ExchangeInfoDict>> {
     markets::get_exchange_override(ticker)
-        .map(|info| info.map(to_exchange_info_dict))
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+        .map(|info| info.map(ExchangeInfoDict::from))
+        .map_err(py_value_error)
 }
 
 /// Clear one override (or all when ticker is None).
@@ -167,7 +202,7 @@ fn ext_get_exchange_override(ticker: &str) -> PyResult<Option<ExchangeInfoDict>>
 #[pyfunction]
 #[pyo3(signature = (ticker=None))]
 fn ext_clear_exchange_override(ticker: Option<&str>) -> PyResult<()> {
-    markets::clear_exchange_override(ticker).map_err(|e| PyValueError::new_err(e.to_string()))
+    markets::clear_exchange_override(ticker).map_err(py_value_error)
 }
 
 /// List all runtime overrides.
@@ -175,11 +210,11 @@ fn ext_clear_exchange_override(ticker: Option<&str>) -> PyResult<()> {
 #[pyfunction]
 fn ext_list_exchange_overrides() -> PyResult<HashMap<String, ExchangeInfoDict>> {
     markets::list_exchange_overrides()
-        .map_err(|e| PyValueError::new_err(e.to_string()))
+        .map_err(py_value_error)
         .map(|overrides| {
             overrides
                 .into_iter()
-                .map(|(k, v)| (k, to_exchange_info_dict(v)))
+                .map(|(k, v)| (k, ExchangeInfoDict::from(v)))
                 .collect()
         })
 }
@@ -198,39 +233,78 @@ fn ext_session_times_to_utc(
     })?;
 
     let (start, end) = markets::session_times_to_utc(start_time, end_time, exchange_tz, dt)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        .map_err(py_value_error)?;
     Ok((
         start.format("%Y-%m-%dT%H:%M:%S").to_string(),
         end.format("%Y-%m-%dT%H:%M:%S").to_string(),
     ))
 }
 
-fn to_exchange_info_dict(info: ExchangeInfo) -> ExchangeInfoDict {
-    ExchangeInfoDict {
-        ticker: info.ticker,
-        mic: info.mic,
-        exch_code: info.exch_code,
-        timezone: info.timezone,
-        utc_offset: info.utc_offset,
-        source: info.source.as_str().to_string(),
-        day: info.sessions.day,
-        allday: info.sessions.allday,
-        pre: info.sessions.pre,
-        post: info.sessions.post,
-        am: info.sessions.am,
-        pm: info.sessions.pm,
-    }
-}
-
 /// Register all markets functions on the module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(ext_derive_sessions, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_get_market_rule, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_infer_timezone, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_set_exchange_override, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_get_exchange_override, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_clear_exchange_override, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_list_exchange_overrides, m)?)?;
-    m.add_function(wrap_pyfunction!(ext_session_times_to_utc, m)?)?;
-    Ok(())
+    register_pyfunctions!(
+        m;
+        ext_derive_sessions,
+        ext_get_market_rule,
+        ext_infer_timezone,
+        ext_set_exchange_override,
+        ext_get_exchange_override,
+        ext_clear_exchange_override,
+        ext_list_exchange_overrides,
+        ext_session_times_to_utc,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xbbg_ext::{ExchangeInfoSource, SessionWindows};
+
+    #[test]
+    fn market_rule_dict_preserves_session_rule_fields() {
+        let rule = ext_get_market_rule(Some("XNYS"), None).expect("expected known market rule");
+        assert_eq!(rule.pre_minutes, 330);
+        assert_eq!(rule.post_minutes, 240);
+        assert_eq!(rule.lunch_start_min, None);
+        assert_eq!(rule.lunch_end_min, None);
+        assert!(!rule.is_continuous);
+    }
+
+    #[test]
+    fn exchange_info_dict_preserves_all_public_fields() {
+        let info = ExchangeInfo {
+            ticker: "AAPL US Equity".to_string(),
+            mic: Some("XNAS".to_string()),
+            exch_code: Some("US".to_string()),
+            timezone: "America/New_York".to_string(),
+            utc_offset: Some(-5.0),
+            sessions: SessionWindows {
+                day: Some(("09:30".to_string(), "16:00".to_string())),
+                allday: Some(("04:00".to_string(), "20:00".to_string())),
+                pre: Some(("04:00".to_string(), "09:30".to_string())),
+                post: Some(("16:01".to_string(), "20:00".to_string())),
+                am: None,
+                pm: None,
+            },
+            source: ExchangeInfoSource::Override,
+            cached_at: None,
+        };
+
+        let dict = ExchangeInfoDict::from(info);
+        assert_eq!(dict.ticker, "AAPL US Equity");
+        assert_eq!(dict.mic, Some("XNAS".to_string()));
+        assert_eq!(dict.exch_code, Some("US".to_string()));
+        assert_eq!(dict.timezone, "America/New_York");
+        assert_eq!(dict.utc_offset, Some(-5.0));
+        assert_eq!(dict.source, "override");
+        assert_eq!(dict.day, Some(("09:30".to_string(), "16:00".to_string())));
+        assert_eq!(
+            dict.allday,
+            Some(("04:00".to_string(), "20:00".to_string()))
+        );
+        assert_eq!(dict.pre, Some(("04:00".to_string(), "09:30".to_string())));
+        assert_eq!(dict.post, Some(("16:01".to_string(), "20:00".to_string())));
+        assert_eq!(dict.am, None);
+        assert_eq!(dict.pm, None);
+    }
 }
