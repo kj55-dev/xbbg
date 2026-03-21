@@ -15,6 +15,21 @@ from __future__ import annotations
 
 import pytest
 
+try:
+    import xbbg as _xbbg_module
+except ImportError as exc:
+    _CORE_AVAILABLE = False
+    _CORE_SKIP_REASON = f"xbbg._core unavailable: {exc}"
+else:
+    try:
+        _ = _xbbg_module._core
+    except ImportError as exc:
+        _CORE_AVAILABLE = False
+        _CORE_SKIP_REASON = f"xbbg._core unavailable: {exc}"
+    else:
+        _CORE_AVAILABLE = True
+        _CORE_SKIP_REASON = ""
+
 
 class TestPythonExceptionHierarchy:
     """Tests for the Python-defined exception classes."""
@@ -118,6 +133,7 @@ class TestPythonExceptionHierarchy:
                 pytest.fail(f"Failed to catch {type(exc).__name__} with BlpError")
 
 
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason=_CORE_SKIP_REASON)
 class TestRustCoreExceptions:
     """Tests for the Rust _core exception classes exposed to Python."""
 

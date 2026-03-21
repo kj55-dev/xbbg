@@ -25,6 +25,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ._sync import _run_sync
+
 
 @dataclass
 class ElementInfo:
@@ -193,37 +195,27 @@ async def alist_valid_elements(service: str, operation: str) -> list[str] | None
 # Sync API wrappers
 def get_schema(service: str) -> ServiceSchema:
     """Get schema for a service (sync wrapper)."""
-    import asyncio
-
-    return asyncio.run(aget_schema(service))
+    return _run_sync(aget_schema(service))
 
 
 def get_operation(service: str, operation: str) -> OperationSchema:
     """Get schema for a specific operation (sync wrapper)."""
-    import asyncio
-
-    return asyncio.run(aget_operation(service, operation))
+    return _run_sync(aget_operation(service, operation))
 
 
 def list_operations(service: str) -> list[str]:
     """List all operations for a service (sync wrapper)."""
-    import asyncio
-
-    return asyncio.run(alist_operations(service))
+    return _run_sync(alist_operations(service))
 
 
 def get_enum_values(service: str, operation: str, element: str) -> list[str] | None:
     """Get valid enum values for an element (sync wrapper)."""
-    import asyncio
-
-    return asyncio.run(aget_enum_values(service, operation, element))
+    return _run_sync(aget_enum_values(service, operation, element))
 
 
 def list_valid_elements(service: str, operation: str) -> list[str] | None:
     """List all valid element names for an operation (sync wrapper)."""
-    import asyncio
-
-    return asyncio.run(alist_valid_elements(service, operation))
+    return _run_sync(alist_valid_elements(service, operation))
 
 
 # Cache management

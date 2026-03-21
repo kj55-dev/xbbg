@@ -17,17 +17,19 @@ from typing import TYPE_CHECKING
 
 import narwhals.stable.v1 as nw
 
-# Import Rust ext utilities for max performance
-from xbbg._core import (
-    ext_build_fx_pair,
-    ext_same_currency,
-)
 from xbbg.ext._utils import _pivot_bdp_to_wide, _syncify
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from narwhals.typing import IntoDataFrame
+
+
+def _fx_helpers():
+    """Load native FX helpers only when conversion actually needs them."""
+    from xbbg._core import ext_build_fx_pair, ext_same_currency
+
+    return ext_build_fx_pair, ext_same_currency
 
 
 # =============================================================================
@@ -115,6 +117,7 @@ async def aconvert_ccy(
 
     # --- Build FX pair mapping using Rust ---
     # ticker -> {fx_pair, factor}
+    ext_build_fx_pair, ext_same_currency = _fx_helpers()
     fx_info: dict[str, dict] = {}
     fx_pairs_needed: set[str] = set()
 

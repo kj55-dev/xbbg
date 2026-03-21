@@ -13,10 +13,11 @@ These tests cover the non-Bloomberg-dependent edge cases:
 from __future__ import annotations
 
 import narwhals.stable.v1 as nw
-import pandas as pd
 import pytest
 
 from xbbg.ext.currency import aconvert_ccy, convert_ccy
+
+pd = pytest.importorskip("pandas")
 
 
 class TestConvertCcyEmptyData:

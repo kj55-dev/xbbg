@@ -26,8 +26,6 @@ from typing import TYPE_CHECKING
 
 import narwhals.stable.v1 as nw
 
-# Import Rust date parser (shared with other ext modules)
-from xbbg._core import ext_parse_date
 from xbbg.ext._utils import _syncify
 
 logger = logging.getLogger(__name__)
@@ -41,7 +39,9 @@ def _parse_date(dt: str | date) -> datetime:
     if isinstance(dt, datetime):
         return dt
     if isinstance(dt, str):
-        year, month, day = ext_parse_date(dt)
+        from xbbg import _core
+
+        year, month, day = _core.ext_parse_date(dt)
         return datetime(year, month, day)
     # date object
     if hasattr(dt, "year"):

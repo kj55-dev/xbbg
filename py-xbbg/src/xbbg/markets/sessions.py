@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from xbbg._core import ext_derive_sessions
-
 if TYPE_CHECKING:
     from xbbg.markets.bloomberg import ExchangeInfo
 
@@ -42,6 +40,8 @@ class SessionWindows:
 
 def derive_sessions(exchange_info: ExchangeInfo) -> SessionWindows:
     """Derive session windows from ExchangeInfo using Rust market rules."""
+    from xbbg._core import ext_derive_sessions
+
     regular = exchange_info.sessions.get("regular")
     futures = exchange_info.sessions.get("futures")
     base_session = regular or futures

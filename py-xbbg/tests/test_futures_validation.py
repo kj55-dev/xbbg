@@ -13,9 +13,14 @@ function ext_validate_generic_ticker which calls is_specific_contract.
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 
-from xbbg._core import ext_validate_generic_ticker
+try:
+    ext_validate_generic_ticker = importlib.import_module("xbbg._core").ext_validate_generic_ticker
+except ImportError as exc:
+    pytest.skip(f"xbbg._core unavailable: {exc}", allow_module_level=True)
 
 
 class TestValidateGenericTicker:

@@ -12,11 +12,12 @@ import os
 import sys
 import threading
 
-import pandas as pd
 import pytest
 
+pd = pytest.importorskip("pandas")
+
 # CRITICAL: Import submodules directly WITHOUT importing from xbbg.markets.__init__
-# because __init__.py imports sessions.py which imports xbbg._core at module level.
+# so these offline tests stay focused on pure-Python logic.
 # We use importlib.util.spec_from_file_location to load modules directly.
 
 
@@ -86,6 +87,10 @@ CurrencyPair = info_module.CurrencyPair
 convert_session_times_to_utc = info_module.convert_session_times_to_utc
 _resolve_to_timezone = info_module._resolve_to_timezone
 explode = info_module.explode
+
+# Load sessions module
+sessions_module = _load_module_from_file("xbbg.markets.sessions", os.path.join(markets_dir, "sessions.py"))
+SessionWindows = sessions_module.SessionWindows
 
 
 # ============================================================================
@@ -158,7 +163,7 @@ class TestOverrides:
         )
         info = get_exchange_override("AAPL US Equity")
         assert info is not None
-        assert isinstance(info, ExchangeInfo)
+        assert type(info).__name__ == ExchangeInfo.__name__
         assert info.ticker == "AAPL US Equity"
         assert info.timezone == "America/New_York"
         assert info.mic == "XNAS"
@@ -536,33 +541,59 @@ class TestBloombergParsing:
 
 
 class TestSessionWindows:
-    """Tests for xbbg.markets.sessions.SessionWindows dataclass.
+    """Tests for xbbg.markets.sessions.SessionWindows dataclass."""
 
-    Note: SessionWindows dataclass is defined in sessions.py which imports
-    xbbg._core at module level. Since we don't have the Rust DLL, we skip
-    these tests. The dataclass itself is pure Python and doesn't need testing
-    beyond what the source code shows.
-    """
-
-    @pytest.mark.skip(reason="sessions.py imports xbbg._core which requires Rust DLL")
     def test_session_windows_creation_empty(self):
         """SessionWindows: creates with all None fields."""
+        windows = SessionWindows()
 
-    @pytest.mark.skip(reason="sessions.py imports xbbg._core which requires Rust DLL")
+        assert windows.day is None
+        assert windows.allday is None
+        assert windows.pre is None
+        assert windows.post is None
+        assert windows.am is None
+        assert windows.pm is None
+
     def test_session_windows_creation_with_fields(self):
         """SessionWindows: creates with specified fields."""
+        windows = SessionWindows(day=("09:30", "16:00"), pre=("04:00", "09:30"), post=("16:00", "20:00"))
 
-    @pytest.mark.skip(reason="sessions.py imports xbbg._core which requires Rust DLL")
+        assert windows.day == ("09:30", "16:00")
+        assert windows.pre == ("04:00", "09:30")
+        assert windows.post == ("16:00", "20:00")
+
     def test_session_windows_to_dict_empty(self):
         """SessionWindows.to_dict(): returns empty dict when all None."""
+        assert SessionWindows().to_dict() == {}
 
-    @pytest.mark.skip(reason="sessions.py imports xbbg._core which requires Rust DLL")
     def test_session_windows_to_dict_excludes_none(self):
         """SessionWindows.to_dict(): excludes None values."""
+        windows = SessionWindows(day=("09:30", "16:00"), post=("16:00", "20:00"))
 
-    @pytest.mark.skip(reason="sessions.py imports xbbg._core which requires Rust DLL")
+        assert windows.to_dict() == {
+            "day": ("09:30", "16:00"),
+            "post": ("16:00", "20:00"),
+        }
+
     def test_session_windows_to_dict_includes_all_non_none(self):
         """SessionWindows.to_dict(): includes all non-None values."""
+        windows = SessionWindows(
+            day=("09:30", "16:00"),
+            allday=("00:00", "23:59"),
+            pre=("04:00", "09:30"),
+            post=("16:00", "20:00"),
+            am=("09:30", "12:00"),
+            pm=("13:00", "16:00"),
+        )
+
+        assert windows.to_dict() == {
+            "day": ("09:30", "16:00"),
+            "allday": ("00:00", "23:59"),
+            "pre": ("04:00", "09:30"),
+            "post": ("16:00", "20:00"),
+            "am": ("09:30", "12:00"),
+            "pm": ("13:00", "16:00"),
+        }
 
 
 # ============================================================================

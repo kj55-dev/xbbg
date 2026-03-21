@@ -10,26 +10,15 @@ Functions:
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Sequence
 from datetime import date
-import functools
-from typing import Any, ParamSpec, TypeVar
+from typing import Any
 
 import narwhals.stable.v1 as nw
 
-_P = ParamSpec("_P")
-_T = TypeVar("_T")
+from .._sync import _syncify
 
-
-def _syncify(async_func: Callable[_P, Coroutine[Any, Any, _T]]) -> Callable[_P, _T]:
-    """Create a synchronous wrapper for an async function."""
-
-    @functools.wraps(async_func)
-    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _T:
-        return asyncio.run(async_func(*args, **kwargs))
-
-    return wrapper
+__all__ = ["_syncify", "_abdp_fields", "_abds_field", "_pivot_bdp_to_wide", "_fmt_date"]
 
 
 async def _abdp_fields(

@@ -34,17 +34,16 @@ except PackageNotFoundError:
 if TYPE_CHECKING:
     from . import _core
 
-# DLL search path setup (Windows)
+# SDK runtime preparation
 # MUST run at module level, not inside __getattr__. When Python resolves
 # `from xbbg._core import X`, it imports `xbbg` first (here) then loads
 # the native extension as a submodule - bypassing __getattr__ entirely.
-if sys.platform == "win32":
-    try:
-        from . import _sdk
+try:
+    from . import _sdk
 
-        _sdk._add_sdk_to_dll_search_path()
-    except Exception:
-        pass  # SDK detection failures shouldn't block package import
+    _sdk._prepare_sdk_runtime()
+except Exception:
+    pass  # SDK detection failures shouldn't block package import
 
 _importing_core = False
 _core_module = None
@@ -64,19 +63,25 @@ def _import_core():
     try:
         mod = importlib.import_module("xbbg._core")
         _core_module = mod
+
+        exceptions_module = sys.modules.get("xbbg.exceptions")
+        if exceptions_module is not None and hasattr(exceptions_module, "_bind_core_exceptions"):
+            exceptions_module._bind_core_exceptions(mod)
+
         return mod
     except ImportError as e:
-        if "DLL load failed" in str(e) or "cannot open shared object" in str(e):
+        message = str(e)
+        missing_runtime_fragments = ("DLL load failed", "cannot open shared object", "Library not loaded")
+        if any(fragment in message for fragment in missing_runtime_fragments):
             raise ImportError(
                 f"{e}\n\n"
                 "The xbbg native extension requires the Bloomberg C++ SDK shared library.\n"
-                "Supported platforms: Linux x64, Windows x64/x86\n\n"
                 "You can provide the SDK from any of these sources:\n"
                 "  1. blpapi Python package: pip install blpapi --index-url "
                 "https://blpapi.bloomberg.com/repository/releases/python/simple/\n"
                 "  2. Bloomberg Terminal (DAPI) - automatically detected if installed\n"
                 "  3. Bloomberg C++ SDK: set BLPAPI_ROOT environment variable\n"
-                "  4. xbbg.set_sdk_path('/path/to/sdk') - manually set SDK path (Windows only)"
+                "  4. xbbg.set_sdk_path('/path/to/sdk') - manually set SDK path"
             ) from e
         raise
     finally:

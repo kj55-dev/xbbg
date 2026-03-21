@@ -38,8 +38,9 @@ fn main() {
 
     println!("cargo:rustc-link-lib=static=datamock");
 
-    // On Windows, link C++ runtime
-    if cfg!(target_os = "windows") {
+    if cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-lib=c++");
+    } else if cfg!(target_os = "windows") {
         // MSVC links C++ runtime automatically
     } else {
         println!("cargo:rustc-link-lib=stdc++");

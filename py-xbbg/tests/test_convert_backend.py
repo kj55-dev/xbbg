@@ -13,10 +13,11 @@ across all supported output formats.
 from __future__ import annotations
 
 import narwhals.stable.v1 as nw
-import pandas as pd
 import pytest
 
 from xbbg.blp import Backend, _convert_backend
+
+pd = pytest.importorskip("pandas")
 
 
 class TestConvertBackendNarwhals:

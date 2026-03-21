@@ -31,10 +31,15 @@ from xbbg._services_gen import (
     OutputMode,
     Service,
 )
-from xbbg.exceptions import BlpValidationError
 
 # Backwards compatibility alias
 LongMode = Format
+
+
+def _raise_validation_error(message: str) -> None:
+    from xbbg.exceptions import BlpValidationError
+
+    raise BlpValidationError(message)
 
 
 @dataclass
@@ -120,15 +125,15 @@ class RequestParams:
             BlpValidationError: If required parameters are missing or invalid.
         """
         if not self.service:
-            raise BlpValidationError("service is required")
+            _raise_validation_error("service is required")
 
         if self.operation == Operation.RAW_REQUEST.value:
             if not self.request_operation:
-                raise BlpValidationError("request_operation is required for RawRequest")
+                _raise_validation_error("request_operation is required for RawRequest")
             return
 
         if not self.operation:
-            raise BlpValidationError("operation is required")
+            _raise_validation_error("operation is required")
 
         op = self.operation
 
@@ -148,47 +153,47 @@ class RequestParams:
     def _validate_reference_data(self) -> None:
         """Validate ReferenceDataRequest parameters."""
         if not self.securities:
-            raise BlpValidationError("securities is required for ReferenceDataRequest")
+            _raise_validation_error("securities is required for ReferenceDataRequest")
         if not self.fields:
-            raise BlpValidationError("fields is required for ReferenceDataRequest")
+            _raise_validation_error("fields is required for ReferenceDataRequest")
 
     def _validate_historical_data(self) -> None:
         """Validate HistoricalDataRequest parameters."""
         if not self.securities:
-            raise BlpValidationError("securities is required for HistoricalDataRequest")
+            _raise_validation_error("securities is required for HistoricalDataRequest")
         if not self.fields:
-            raise BlpValidationError("fields is required for HistoricalDataRequest")
+            _raise_validation_error("fields is required for HistoricalDataRequest")
         if not self.start_date:
-            raise BlpValidationError("start_date is required for HistoricalDataRequest")
+            _raise_validation_error("start_date is required for HistoricalDataRequest")
         if not self.end_date:
-            raise BlpValidationError("end_date is required for HistoricalDataRequest")
+            _raise_validation_error("end_date is required for HistoricalDataRequest")
 
     def _validate_intraday_bar(self) -> None:
         """Validate IntradayBarRequest parameters."""
         if not self.security:
-            raise BlpValidationError("security is required for IntradayBarRequest")
+            _raise_validation_error("security is required for IntradayBarRequest")
         if not self.event_type:
-            raise BlpValidationError("event_type is required for IntradayBarRequest")
+            _raise_validation_error("event_type is required for IntradayBarRequest")
         if self.interval is None:
-            raise BlpValidationError("interval is required for IntradayBarRequest")
+            _raise_validation_error("interval is required for IntradayBarRequest")
         if not self.start_datetime:
-            raise BlpValidationError("start_datetime is required for IntradayBarRequest")
+            _raise_validation_error("start_datetime is required for IntradayBarRequest")
         if not self.end_datetime:
-            raise BlpValidationError("end_datetime is required for IntradayBarRequest")
+            _raise_validation_error("end_datetime is required for IntradayBarRequest")
 
     def _validate_intraday_tick(self) -> None:
         """Validate IntradayTickRequest parameters."""
         if not self.security:
-            raise BlpValidationError("security is required for IntradayTickRequest")
+            _raise_validation_error("security is required for IntradayTickRequest")
         if not self.start_datetime:
-            raise BlpValidationError("start_datetime is required for IntradayTickRequest")
+            _raise_validation_error("start_datetime is required for IntradayTickRequest")
         if not self.end_datetime:
-            raise BlpValidationError("end_datetime is required for IntradayTickRequest")
+            _raise_validation_error("end_datetime is required for IntradayTickRequest")
 
     def _validate_field_request(self) -> None:
         """Validate FieldInfoRequest/FieldSearchRequest parameters."""
         if not self.fields:
-            raise BlpValidationError("fields is required for field metadata requests")
+            _raise_validation_error("fields is required for field metadata requests")
 
     def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for passing to Rust.

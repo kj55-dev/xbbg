@@ -21,15 +21,9 @@ from __future__ import annotations
 
 from datetime import date
 from enum import IntEnum
+import functools
 from typing import TYPE_CHECKING
 
-# Import Rust ext utilities for max performance
-from xbbg._core import (
-    ext_build_corporate_bonds_query,
-    ext_build_preferreds_query,
-    ext_build_yas_overrides,
-    ext_normalize_tickers,
-)
 from xbbg.ext._utils import _fmt_date, _syncify
 
 if TYPE_CHECKING:
@@ -65,8 +59,29 @@ class YieldType(IntEnum):
     YTAL = 9
 
 
+@functools.lru_cache(maxsize=1)
+def _fixed_income_core() -> dict[str, object]:
+    """Load the native fixed-income helpers only when runtime work needs them."""
+    from xbbg._core import (
+        ext_build_corporate_bonds_query,
+        ext_build_preferreds_query,
+        ext_build_yas_overrides,
+        ext_default_bqr_datetimes,
+        ext_normalize_tickers,
+    )
+
+    return {
+        "ext_build_corporate_bonds_query": ext_build_corporate_bonds_query,
+        "ext_default_bqr_datetimes": ext_default_bqr_datetimes,
+        "ext_build_preferreds_query": ext_build_preferreds_query,
+        "ext_build_yas_overrides": ext_build_yas_overrides,
+        "ext_normalize_tickers": ext_normalize_tickers,
+    }
+
+
 def _normalize_tickers(tickers: str | list[str]) -> list[str]:
     """Normalize tickers to a list using Rust."""
+    ext_normalize_tickers = _fixed_income_core()["ext_normalize_tickers"]
     # ext_normalize_tickers expects a list, so wrap single string
     if isinstance(tickers, str):
         return ext_normalize_tickers([tickers])
@@ -167,6 +182,7 @@ async def ayas(
     formatted_dt = _fmt_date(settle_dt) if settle_dt is not None else None
     yt_flag = int(yield_type) if yield_type is not None else None
 
+    ext_build_yas_overrides = _fixed_income_core()["ext_build_yas_overrides"]
     yas_pairs = ext_build_yas_overrides(
         settle_dt=formatted_dt,
         yield_type=yt_flag,
@@ -232,6 +248,7 @@ async def apreferreds(
 
     # Build BQL query using Rust (handles ticker normalization, field dedup)
     extra = list(fields) if fields else []
+    ext_build_preferreds_query = _fixed_income_core()["ext_build_preferreds_query"]
     bql_query = ext_build_preferreds_query(equity_ticker, extra)
 
     return await abql(bql_query, **kwargs)
@@ -283,6 +300,7 @@ async def acorporate_bonds(
 
     # Build BQL query using Rust (handles field dedup, filter construction)
     extra = list(fields) if fields else []
+    ext_build_corporate_bonds_query = _fixed_income_core()["ext_build_corporate_bonds_query"]
     bql_query = ext_build_corporate_bonds_query(ticker, ccy, extra, active_only)
 
     return await abql(bql_query, **kwargs)
@@ -341,9 +359,9 @@ async def abqr(
         asyncio.run(main())
     """
     from xbbg import abdtick
-    from xbbg._core import ext_default_bqr_datetimes
 
     # Compute default datetime range using Rust (handles normalization + defaults)
+    ext_default_bqr_datetimes = _fixed_income_core()["ext_default_bqr_datetimes"]
     start_datetime, end_datetime = ext_default_bqr_datetimes(start_datetime, end_datetime)
 
     # Default event types

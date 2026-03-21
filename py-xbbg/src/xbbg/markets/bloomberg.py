@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 import importlib
@@ -12,6 +11,8 @@ from typing import Any, cast
 
 import narwhals.stable.v1 as nw
 import pandas as pd
+
+from .._sync import _run_sync
 
 logger = logging.getLogger(__name__)
 
@@ -230,4 +231,4 @@ async def afetch_exchange_info(ticker: str, **kwargs) -> ExchangeInfo:
 
 def fetch_exchange_info(ticker: str, **kwargs) -> ExchangeInfo:
     """Sync fetch exchange metadata from Bloomberg."""
-    return asyncio.run(afetch_exchange_info(ticker=ticker, **kwargs))
+    return _run_sync(afetch_exchange_info(ticker=ticker, **kwargs))

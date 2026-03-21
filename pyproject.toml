@@ -180,6 +180,7 @@ dev = [
     "setuptools>=82",
     "setuptools-rust>=1.12",
     "setuptools-scm>=9",
+    "pandas>=2.0.0",
     "pre-commit>=4.5.1",
     "pytest>=8.4.2",
     "pytest-asyncio>=0.24.0",

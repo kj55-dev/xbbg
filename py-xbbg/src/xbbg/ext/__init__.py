@@ -1,165 +1,12 @@
 """Extension functions for xbbg.
 
-This module contains convenience wrappers built on top of the core API.
-These are pure Python functions that compose core operations (bdp, bds, bdh, bql)
-for common use cases.
-
-Extension Categories:
-    - historical: dividend(), earnings(), turnover(), etf_holdings()
-    - futures: fut_ticker(), active_futures(), cdx_ticker(), active_cdx()
-    - currency: convert_ccy()
-    - fixed_income: yas(), preferreds(), corporate_bonds(), bqr()
-    - bonds: bond_info(), bond_risk(), bond_spreads(), bond_cashflows(), bond_key_rates(), bond_curve()
-    - options: option_info(), option_greeks(), option_pricing(), option_chain(), option_chain_bql(), option_screen()
-    - cdx: cdx_info(), cdx_defaults(), cdx_pricing(), cdx_risk(), cdx_basis(), cdx_default_prob(), cdx_cashflows(), cdx_curve()
-
-Async versions (primary implementations):
-    - historical: adividend(), aearnings(), aturnover(), aetf_holdings()
-    - futures: afut_ticker(), aactive_futures(), acdx_ticker(), aactive_cdx()
-    - currency: aconvert_ccy()
-    - fixed_income: ayas(), apreferreds(), acorporate_bonds(), abqr()
-    - bonds: abond_info(), abond_risk(), abond_spreads(), abond_cashflows(), abond_key_rates(), abond_curve()
-    - options: aoption_info(), aoption_greeks(), aoption_pricing(), aoption_chain(), aoption_chain_bql(), aoption_screen()
-    - cdx: acdx_info(), acdx_defaults(), acdx_pricing(), acdx_risk(), acdx_basis(), acdx_default_prob(), acdx_cashflows(), acdx_curve()
-
-Example::
-
-    from xbbg import ext
-
-    # Get dividend history
-    df = ext.dividend("AAPL US Equity")
-
-    # Get ETF holdings
-    df = ext.etf_holdings("SPY US Equity")
-
-    # Resolve futures ticker
-    ticker = ext.fut_ticker("ES1 Index", "2024-01-15")
-
-    # Convert currency
-    df_usd = ext.convert_ccy(df, ccy="USD")
-
-    # Yield & spread analysis for bonds
-    df = ext.yas("US912810TM69 Govt", "YAS_BOND_YLD")
-
-    # Find preferred stocks
-    df = ext.preferreds("BAC US Equity")
-
-    # Find corporate bonds
-    df = ext.corporate_bonds("AAPL")
-
-    # Bond analytics
-    df = ext.bond_info("T 4.5 05/15/38 Govt")
-    df = ext.bond_risk("T 4.5 05/15/38 Govt")
-    df = ext.bond_spreads("T 4.5 05/15/38 Govt")
-
-    # Options analytics
-    df = ext.option_info("AAPL US 01/17/25 C200 Equity")
-    df = ext.option_greeks("AAPL US 01/17/25 C200 Equity")
-    chain = ext.option_chain("AAPL US Equity")
-
-    # CDX analytics
-    df = ext.cdx_info("CDX IG CDSI GEN 5Y Corp")
-    df = ext.cdx_pricing("CDX IG CDSI GEN 5Y Corp")
-
-    # Async example
-    import asyncio
-
-
-    async def main():
-        df = await ext.adividend("AAPL US Equity")
-        print(df)
-
-
-    asyncio.run(main())
+This package re-exports the public extension helpers lazily so importing
+one pure-Python symbol does not eagerly pull in every native-backed module.
 """
 
 from __future__ import annotations
 
-# Sync functions
-# Async functions
-from xbbg.ext.bonds import (
-    abond_cashflows,
-    abond_curve,
-    abond_info,
-    abond_key_rates,
-    abond_risk,
-    abond_spreads,
-    bond_cashflows,
-    bond_curve,
-    bond_info,
-    bond_key_rates,
-    bond_risk,
-    bond_spreads,
-)
-from xbbg.ext.cdx import (
-    acdx_basis,
-    acdx_cashflows,
-    acdx_curve,
-    acdx_default_prob,
-    acdx_defaults,
-    acdx_info,
-    acdx_pricing,
-    acdx_risk,
-    cdx_basis,
-    cdx_cashflows,
-    cdx_curve,
-    cdx_default_prob,
-    cdx_defaults,
-    cdx_info,
-    cdx_pricing,
-    cdx_risk,
-)
-from xbbg.ext.currency import aconvert_ccy, convert_ccy
-from xbbg.ext.fixed_income import (
-    YieldType,
-    abqr,
-    acorporate_bonds,
-    apreferreds,
-    ayas,
-    bqr,
-    corporate_bonds,
-    preferreds,
-    yas,
-)
-from xbbg.ext.futures import (
-    aactive_cdx,
-    aactive_futures,
-    acdx_ticker,
-    active_cdx,
-    active_futures,
-    afut_ticker,
-    cdx_ticker,
-    fut_ticker,
-)
-from xbbg.ext.historical import (
-    adividend,
-    aearnings,
-    aetf_holdings,
-    aturnover,
-    dividend,
-    earnings,
-    etf_holdings,
-    turnover,
-)
-from xbbg.ext.options import (
-    ChainPeriodicity,
-    ExerciseType,
-    ExpiryMatch,
-    PutCall,
-    StrikeRef,
-    aoption_chain,
-    aoption_chain_bql,
-    aoption_greeks,
-    aoption_info,
-    aoption_pricing,
-    aoption_screen,
-    option_chain,
-    option_chain_bql,
-    option_greeks,
-    option_info,
-    option_pricing,
-    option_screen,
-)
+import importlib
 
 __all__ = [
     # Historical extensions (sync)
@@ -250,3 +97,100 @@ __all__ = [
     "acdx_cashflows",
     "acdx_curve",
 ]
+
+_ATTR_TO_MODULE = {
+    # bonds
+    "abond_cashflows": "bonds",
+    "abond_curve": "bonds",
+    "abond_info": "bonds",
+    "abond_key_rates": "bonds",
+    "abond_risk": "bonds",
+    "abond_spreads": "bonds",
+    "bond_cashflows": "bonds",
+    "bond_curve": "bonds",
+    "bond_info": "bonds",
+    "bond_key_rates": "bonds",
+    "bond_risk": "bonds",
+    "bond_spreads": "bonds",
+    # cdx
+    "acdx_basis": "cdx",
+    "acdx_cashflows": "cdx",
+    "acdx_curve": "cdx",
+    "acdx_default_prob": "cdx",
+    "acdx_defaults": "cdx",
+    "acdx_info": "cdx",
+    "acdx_pricing": "cdx",
+    "acdx_risk": "cdx",
+    "cdx_basis": "cdx",
+    "cdx_cashflows": "cdx",
+    "cdx_curve": "cdx",
+    "cdx_default_prob": "cdx",
+    "cdx_defaults": "cdx",
+    "cdx_info": "cdx",
+    "cdx_pricing": "cdx",
+    "cdx_risk": "cdx",
+    # currency
+    "aconvert_ccy": "currency",
+    "convert_ccy": "currency",
+    # fixed income
+    "YieldType": "fixed_income",
+    "abqr": "fixed_income",
+    "acorporate_bonds": "fixed_income",
+    "apreferreds": "fixed_income",
+    "ayas": "fixed_income",
+    "bqr": "fixed_income",
+    "corporate_bonds": "fixed_income",
+    "preferreds": "fixed_income",
+    "yas": "fixed_income",
+    # futures
+    "aactive_cdx": "futures",
+    "aactive_futures": "futures",
+    "acdx_ticker": "futures",
+    "active_cdx": "futures",
+    "active_futures": "futures",
+    "afut_ticker": "futures",
+    "cdx_ticker": "futures",
+    "fut_ticker": "futures",
+    # historical
+    "adividend": "historical",
+    "aearnings": "historical",
+    "aetf_holdings": "historical",
+    "aturnover": "historical",
+    "dividend": "historical",
+    "earnings": "historical",
+    "etf_holdings": "historical",
+    "turnover": "historical",
+    # options
+    "ChainPeriodicity": "options",
+    "ExerciseType": "options",
+    "ExpiryMatch": "options",
+    "PutCall": "options",
+    "StrikeRef": "options",
+    "aoption_chain": "options",
+    "aoption_chain_bql": "options",
+    "aoption_greeks": "options",
+    "aoption_info": "options",
+    "aoption_pricing": "options",
+    "aoption_screen": "options",
+    "option_chain": "options",
+    "option_chain_bql": "options",
+    "option_greeks": "options",
+    "option_info": "options",
+    "option_pricing": "options",
+    "option_screen": "options",
+}
+
+
+def __getattr__(name: str):
+    """Resolve extension exports lazily to avoid import-time native coupling."""
+    module_name = _ATTR_TO_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module = importlib.import_module(f"xbbg.ext.{module_name}")
+    return getattr(module, name)
+
+
+def __dir__() -> list[str]:
+    """Expose public exports for tab completion."""
+    return list(__all__)

@@ -18,9 +18,13 @@ import logging
 import sys
 from typing import Any
 
-from xbbg.services import Format
+import narwhals.stable.v1 as nw
+import pyarrow as pa
+
+from xbbg._services_gen import Format
 
 logger = logging.getLogger(__name__)
+_default_backend: Backend | None = None
 
 
 # =============================================================================
@@ -494,12 +498,9 @@ def validate_backend_format(
         ImportError: Backend package missing.
         ValueError: Version too old or format unsupported.
     """
-    # Lazy import to avoid circular dependency (blp → backend → blp).
-    from xbbg.blp import get_backend as _get_backend
-
     # Normalise backend.
     if backend is None:
-        backend = _get_backend() or Backend.NARWHALS
+        backend = get_backend() or Backend.NARWHALS
     elif isinstance(backend, str):
         backend = Backend(backend)
 
@@ -514,3 +515,75 @@ def validate_backend_format(
     check_format_compatibility(backend, fmt, raise_on_error=raise_on_error)
 
     return backend, fmt
+
+
+def set_backend(backend: Backend | str | None) -> None:
+    """Set the default DataFrame backend for all xbbg functions."""
+    global _default_backend
+    if backend is None:
+        _default_backend = None
+    elif isinstance(backend, Backend):
+        _default_backend = backend
+    elif isinstance(backend, str):
+        try:
+            _default_backend = Backend(backend)
+        except ValueError:
+            valid = [b.value for b in Backend]
+            raise ValueError(f"Invalid backend: {backend}. Must be one of {valid}") from None
+    else:
+        raise TypeError(f"backend must be Backend, str, or None, not {type(backend).__name__}")
+
+
+def get_backend() -> Backend | None:
+    """Get the current default DataFrame backend."""
+    return _default_backend
+
+
+def resolve_backend(backend: Backend | str | None) -> Backend | None:
+    """Resolve per-request backend with global fallback."""
+    if backend is None:
+        return _default_backend
+    return Backend(backend) if isinstance(backend, str) else backend
+
+
+def convert_backend(nw_df: Any, backend: Backend | str | None):
+    """Convert a narwhals/native frame to the requested backend."""
+    effective = resolve_backend(backend)
+
+    if hasattr(nw_df, "_mgr"):
+        if effective == Backend.PANDAS:
+            return nw_df
+        nw_df = nw.from_native(nw_df)
+
+    if effective == Backend.PANDAS:
+        return nw_df.to_pandas()
+    if effective == Backend.POLARS:
+        import polars as pl
+
+        native = nw_df.to_native()
+        if isinstance(native, pl.DataFrame):
+            return native
+        if isinstance(native, pa.Table):
+            return pl.from_arrow(native)
+        return pl.from_pandas(nw_df.to_pandas())
+    if effective == Backend.POLARS_LAZY:
+        import polars as pl
+
+        native = nw_df.to_native()
+        if isinstance(native, pl.DataFrame):
+            return native.lazy()
+        if isinstance(native, pa.Table):
+            return pl.from_arrow(native).lazy()
+        return pl.from_pandas(nw_df.to_pandas()).lazy()
+    if effective == Backend.PYARROW:
+        native = nw_df.to_native()
+        if isinstance(native, pa.Table):
+            return native
+        if hasattr(native, "to_arrow"):
+            return native.to_arrow()
+        return pa.Table.from_pandas(nw_df.to_pandas())
+    if effective == Backend.NARWHALS_LAZY:
+        return nw_df.lazy()
+    if effective == Backend.DUCKDB:
+        return nw_df.lazy(backend="duckdb")
+    return nw_df
