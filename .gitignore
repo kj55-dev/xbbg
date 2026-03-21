@@ -9,6 +9,9 @@ env.local
 # Sisyphus
 .sisyphus/
 
+# Oh My OpenCode
+.omx/
+
 # Benchmark dependencies (isolated Python env for benchmarks)
 .benchmark_deps/
 
