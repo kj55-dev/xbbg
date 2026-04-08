@@ -655,6 +655,113 @@ async def _aget_valid_elements(service: str, operation: str) -> set[str]:
         return set()
 
 
+_HISTORICAL_ELEMENT_ALIASES: dict[str, str] = {
+    "PeriodAdj": "periodicityAdjustment",
+    "PerAdj": "periodicityAdjustment",
+    "Period": "periodicitySelection",
+    "Per": "periodicitySelection",
+    "Currency": "currency",
+    "Curr": "currency",
+    "FX": "currency",
+    "Days": "nonTradingDayFillOption",
+    "Fill": "nonTradingDayFillMethod",
+    "Points": "maxDataPoints",
+    "Quote": "overrideOption",
+    "QuoteType": "pricingOption",
+    "QtTyp": "pricingOption",
+    "CshAdjNormal": "adjustmentNormal",
+    "CshAdjAbnormal": "adjustmentAbnormal",
+    "CapChg": "adjustmentSplit",
+    "UseDPDF": "adjustmentFollowDPDF",
+    "Calendar": "calendarCodeOverride",
+}
+
+_HISTORICAL_ELEMENT_VALUE_ALIASES: dict[str, dict[str, str]] = {
+    "periodicityAdjustment": {"A": "ACTUAL", "C": "CALENDAR", "F": "FISCAL"},
+    "periodicitySelection": {
+        "D": "DAILY",
+        "W": "WEEKLY",
+        "M": "MONTHLY",
+        "Q": "QUARTERLY",
+        "S": "SEMI_ANNUALLY",
+        "Y": "YEARLY",
+    },
+    "nonTradingDayFillOption": {
+        "N": "NON_TRADING_WEEKDAYS",
+        "W": "NON_TRADING_WEEKDAYS",
+        "WEEKDAYS": "NON_TRADING_WEEKDAYS",
+        "C": "ALL_CALENDAR_DAYS",
+        "A": "ALL_CALENDAR_DAYS",
+        "ALL": "ALL_CALENDAR_DAYS",
+        "T": "ACTIVE_DAYS_ONLY",
+        "TRADING": "ACTIVE_DAYS_ONLY",
+    },
+    "nonTradingDayFillMethod": {
+        "C": "PREVIOUS_VALUE",
+        "P": "PREVIOUS_VALUE",
+        "PREVIOUS": "PREVIOUS_VALUE",
+        "B": "NIL_VALUE",
+        "BLANK": "NIL_VALUE",
+        "NA": "NIL_VALUE",
+    },
+    "overrideOption": {
+        "A": "OVERRIDE_OPTION_GPA",
+        "G": "OVERRIDE_OPTION_GPA",
+        "AVERAGE": "OVERRIDE_OPTION_GPA",
+        "C": "OVERRIDE_OPTION_CLOSE",
+        "CLOSE": "OVERRIDE_OPTION_CLOSE",
+    },
+    "pricingOption": {
+        "P": "PRICING_OPTION_PRICE",
+        "PRICE": "PRICING_OPTION_PRICE",
+        "Y": "PRICING_OPTION_YIELD",
+        "YIELD": "PRICING_OPTION_YIELD",
+    },
+}
+
+
+def _normalize_historical_element_value(element: str, value: Any) -> Any:
+    """Normalize legacy HistoricalDataRequest enum shorthands."""
+    if not isinstance(value, str):
+        return value
+
+    aliases = _HISTORICAL_ELEMENT_VALUE_ALIASES.get(element)
+    if aliases is None:
+        return value
+
+    return aliases.get(value.upper(), value)
+
+
+def _normalize_historical_request_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Normalize legacy Excel-style BDH kwargs to HistoricalDataRequest elements."""
+    normalized = dict(kwargs)
+
+    for alias, canonical in _HISTORICAL_ELEMENT_ALIASES.items():
+        if alias not in normalized:
+            continue
+
+        alias_raw = normalized.pop(alias)
+        alias_value = _normalize_historical_element_value(canonical, alias_raw)
+
+        if canonical in normalized:
+            canonical_raw = normalized[canonical]
+            canonical_value = _normalize_historical_element_value(canonical, canonical_raw)
+            if canonical_value != alias_value:
+                raise ValueError(
+                    f"Conflicting historical parameters: {alias!r}={alias_raw!r} and "
+                    f"{canonical!r}={canonical_raw!r}"
+                )
+            normalized[canonical] = canonical_value
+            continue
+
+        normalized[canonical] = alias_value
+
+    for key, value in list(normalized.items()):
+        normalized[key] = _normalize_historical_element_value(key, value)
+
+    return normalized
+
+
 async def _aroute_kwargs(
     service: str | Service,
     operation: str | Operation,
@@ -3190,7 +3297,7 @@ async def _build_abdp_plan(args: dict[str, Any]) -> _EndpointPlan:
 async def _build_abdh_plan(args: dict[str, Any]) -> _EndpointPlan:
     ticker_list = _normalize_tickers(args["tickers"])
     field_list = _normalize_fields(args.get("flds"))
-    kwargs = dict(args.get("kwargs", {}))
+    kwargs = _normalize_historical_request_kwargs(dict(args.get("kwargs", {})))
 
     fmt = Format(args["format"]) if isinstance(args.get("format"), str) else args.get("format")
 

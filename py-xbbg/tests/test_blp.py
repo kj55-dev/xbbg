@@ -5,6 +5,78 @@ These tests verify the Python API without requiring a Bloomberg connection.
 
 from __future__ import annotations
 
+import importlib
+import sys
+from types import ModuleType
+from typing import Any
+
+
+def _import_blp_with_stubbed_core(monkeypatch):
+    """Import xbbg.blp with a lightweight _core stub for pure-Python tests."""
+    core_stub = ModuleType("xbbg._core")
+
+    class BlpError(Exception):
+        pass
+
+    class BlpSessionError(BlpError):
+        pass
+
+    class BlpRequestError(BlpError):
+        pass
+
+    class BlpValidationError(BlpError):
+        pass
+
+    class BlpTimeoutError(BlpError):
+        pass
+
+    class BlpInternalError(BlpError):
+        pass
+
+    for name, exc in (
+        ("BlpError", BlpError),
+        ("BlpSessionError", BlpSessionError),
+        ("BlpRequestError", BlpRequestError),
+        ("BlpValidationError", BlpValidationError),
+        ("BlpTimeoutError", BlpTimeoutError),
+        ("BlpInternalError", BlpInternalError),
+        ("BlpSecurityError", BlpRequestError),
+        ("BlpFieldError", BlpRequestError),
+    ):
+        setattr(core_stub, name, exc)
+
+    monkeypatch.setitem(sys.modules, "xbbg._core", core_stub)
+    sys.modules.pop("xbbg.exceptions", None)
+    sys.modules.pop("xbbg.services", None)
+    sys.modules.pop("xbbg.blp", None)
+    return importlib.import_module("xbbg.blp")
+
+
+def _prepare_bdh_capture(monkeypatch, valid_elements: set[str] | None = None):
+    """Stub BDH request plumbing and capture arequest kwargs."""
+    blp = _import_blp_with_stubbed_core(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    class FakeEngine:
+        async def resolve_field_types(self, field_list, field_types, default_type):
+            return field_types or dict.fromkeys(field_list, default_type)
+
+    async def fake_get_valid_elements(_service, _operation):
+        return valid_elements or {
+            "periodicitySelection",
+            "nonTradingDayFillMethod",
+            "nonTradingDayFillOption",
+        }
+
+    async def fake_arequest(*_args, **kwargs):
+        captured.update(kwargs)
+        return [{"ticker": "SPX Index", "field": "PX_LAST", "value": "123.45"}]
+
+    monkeypatch.setattr(blp, "_get_engine", lambda: FakeEngine())
+    monkeypatch.setattr(blp, "_aget_valid_elements", fake_get_valid_elements)
+    monkeypatch.setattr(blp, "arequest", fake_arequest)
+    monkeypatch.setattr(blp, "_convert_backend", lambda df, _backend: df)
+    return blp, captured
 
 class TestBdp:
     """Tests for bdp (reference data) function."""
@@ -37,15 +109,94 @@ class TestBds:
 class TestBdh:
     """Tests for bdh (historical data) function."""
 
-    def test_bdh_placeholder(self):
-        """Placeholder: Test bdh function signature."""
-        # TODO: Implement actual bdh tests
-        assert True, "Placeholder - implement bdh tests"
+    def test_bdh_normalizes_excel_compatible_aliases(self, monkeypatch):
+        """BDH should translate legacy Excel-style kwargs to schema elements."""
+        import warnings
 
-    def test_bdh_date_formatting_placeholder(self):
-        """Placeholder: Test date formatting."""
-        # TODO: Test date string formatting
-        assert True, "Placeholder - implement date formatting tests"
+        blp, captured = _prepare_bdh_capture(monkeypatch)
+
+        with warnings.catch_warnings(record=True) as caught:
+            result = blp.bdh(
+                "SPX Index",
+                "PX_LAST",
+                start_date="2024-01-01",
+                end_date="2024-12-31",
+                Per="W",
+                Fill="P",
+                Days="A",
+            )
+
+        assert len(result) == 1
+        assert not caught
+        assert dict(captured["elements"]) == {
+            "periodicitySelection": "WEEKLY",
+            "nonTradingDayFillMethod": "PREVIOUS_VALUE",
+            "nonTradingDayFillOption": "ALL_CALENDAR_DAYS",
+        }
+
+    def test_bdh_accepts_same_semantic_alias_and_canonical_values(self, monkeypatch):
+        """BDH should not treat equivalent alias and canonical kwargs as conflicting."""
+        import warnings
+
+        blp, captured = _prepare_bdh_capture(monkeypatch)
+
+        with warnings.catch_warnings(record=True) as caught:
+            result = blp.bdh(
+                "SPX Index",
+                "PX_LAST",
+                start_date="2024-01-01",
+                end_date="2024-12-31",
+                Per="W",
+                periodicitySelection="WEEKLY",
+            )
+
+        assert len(result) == 1
+        assert not caught
+        assert dict(captured["elements"]) == {"periodicitySelection": "WEEKLY"}
+
+    def test_bdh_normalizes_canonical_shorthands_and_preserves_unknown_kwargs(self, monkeypatch):
+        """BDH should normalize canonical shorthands and preserve unknown kwargs."""
+        import warnings
+
+        blp, captured = _prepare_bdh_capture(monkeypatch)
+
+        with warnings.catch_warnings(record=True) as caught:
+            result = blp.bdh(
+                "SPX Index",
+                "PX_LAST",
+                start_date="2024-01-01",
+                end_date="2024-12-31",
+                periodicitySelection="W",
+                nonTradingDayFillOption="A",
+                nonTradingDayFillMethod="P",
+                foo="bar",
+            )
+
+        assert len(result) == 1
+        assert len(caught) == 1
+        assert "Unknown parameter 'foo'" in str(caught[0].message)
+        assert dict(captured["elements"]) == {
+            "periodicitySelection": "WEEKLY",
+            "nonTradingDayFillOption": "ALL_CALENDAR_DAYS",
+            "nonTradingDayFillMethod": "PREVIOUS_VALUE",
+            "foo": "bar",
+        }
+
+    def test_bdh_rejects_conflicting_historical_aliases(self, monkeypatch):
+        """BDH should fail fast when alias and canonical kwargs disagree."""
+        import pytest
+
+        blp = _import_blp_with_stubbed_core(monkeypatch)
+
+        with pytest.raises(ValueError, match="Conflicting historical parameters"):
+            blp.bdh(
+                "SPX Index",
+                "PX_LAST",
+                start_date="2024-01-01",
+                end_date="2024-12-31",
+                Per="W",
+                periodicitySelection="MONTHLY",
+            )
 
 
 class TestBdib:
