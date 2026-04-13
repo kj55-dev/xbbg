@@ -1,0 +1,42 @@
+name: Sync upstream
+
+# Temporary auto-sync from alpha-xone/xbbg so this fork can host the built
+# Starlight docs until the canonical repo's Pages deployment is restored
+# (see https://github.com/alpha-xone/xbbg/issues/283 for the wider context).
+#
+# This workflow keeps `main` fast-forwarded to upstream every 15 minutes.
+# Any push to main that touches `docs/**` then triggers `deploy-docs.yml`,
+# which publishes the Starlight site to https://kj55-dev.github.io/xbbg/.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fast-forward fork from upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Syncing kj55-dev/xbbg:main from alpha-xone/xbbg:main..."
+          response=$(gh api \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            repos/${{ github.repository }}/merge-upstream \
+            -f branch=main 2>&1) || {
+              echo "merge-upstream API call failed:"
+              echo "$response"
+              exit 1
+            }
+          echo "$response"
